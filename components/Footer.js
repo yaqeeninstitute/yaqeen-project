@@ -480,7 +480,7 @@ export default function Footer({ faviconUrl: propFaviconUrl }) {
           </div>
 
           <div className="footer-legal-links">
-            <Link href="/terms" className="footer-legal-link">Terms of Service</Link>
+            <Link href="/terms" className="footer-legal-link">Terms of of Service</Link>
             <span className="footer-legal-separator">·</span>
             <Link href="/privacy" className="footer-legal-link">Privacy Policy</Link>
             <span className="footer-legal-separator">·</span>
