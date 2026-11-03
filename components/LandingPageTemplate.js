@@ -400,7 +400,7 @@ export default function LandingPageTemplate({ initialPage }) {
                   letterSpacing: "-0.3px"
                 }}>
                   {hero.headlinePrefix}<br />
-                  <span style={{ color: "#C99B4D", fontWeight: "700" }}>{hero.headlineHighlight1}</span>{hero.headlineMiddle || " with"}<br />
+                  <span style={{ color: "#C99B4D", fontWeight: "700" }}>{hero.headlineHighlight1}</span>{hero.headlineMiddle}<br />
                   <span style={{ color: "#556B3B", fontWeight: "700" }}>{hero.headlineHighlight2}</span><br />
                   {hero.headlineSuffix}
                 </h1>
