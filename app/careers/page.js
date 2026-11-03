@@ -1,0 +1,198 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import "./careers.css";
+import { supabase } from "@/lib/supabase";
+import { usePageContent } from "@/lib/use-page-content";
+
+/* ---------------- Icons ---------------- */
+const IconArrow = ({ size = 15 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+);
+const IconChevron = ({ size = 22, className }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="6 9 12 15 18 9" /></svg>
+);
+
+const IconStar = ({ size = 20 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>);
+const IconChat = ({ size = 20 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>);
+const IconUsers = ({ size = 20 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>);
+const IconHeart = ({ size = 20 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></svg>);
+const IconUser = ({ size = 20 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>);
+const IconBook = ({ size = 20 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>);
+
+const getFaqIcon = (index) => {
+  const icons = [
+    <IconStar key="star" />,
+    <IconChat key="chat" />,
+    <IconUsers key="users" />,
+    <IconHeart key="heart" />,
+    <IconUser key="user" />,
+    <IconBook key="book" />
+  ];
+  return icons[index % icons.length];
+};
+const IconCommunity = () => (<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>);
+const IconTeamwork = () => (<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" /><circle cx="12" cy="12" r="3" /></svg>);
+const IconDevelopment = () => (<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>);
+const IconEmpowerment = () => (<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20V10M18 20V4M6 20v-6" /></svg>);
+const IconExcellence = () => (<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>);
+const IconBalance = () => (<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v18M3 7h18M6 7l-3 6a3 3 0 0 0 6 0zM18 7l-3 6a3 3 0 0 0 6 0z" /></svg>);
+
+const WHY_ICONS = [<IconCommunity />, <IconTeamwork />, <IconDevelopment />, <IconEmpowerment />, <IconExcellence />, <IconBalance />];
+
+const DEFAULT_JOBS = [
+  { id: "d1", title: "Quran Teacher — Female", job_title: "Quran Study with Tajweed & Makharij", meta: "Permanent | 2 Years Exp. | Bilingual (English/Arabic)", badge: "Online", description: "Quran Teacher with Ijazah and 2–3 years of online teaching experience for all ages." },
+  { id: "d2", title: "Arabic Teacher — Female", job_title: "Arabic Language Study", meta: "Permanent | 2 Years Exp. | Bilingual (English/Arabic)", badge: "Online", description: "Arabic teacher with command of the Arabic language, able to design the course per age group and teach the school Arabic curriculum, with a minimum of 2–3 years of experience." },
+  { id: "d3", title: "Admin Staff — Female", job_title: "Administrative Co-ordinator", meta: "Permanent | 2 Years Exp. | Bilingual (English/Arabic)", badge: "Online", description: "Manage letters, communicate with clients and the public with excellent written communication. Must be well organised to keep the schedule of teachers and kids; minimum 2 years of experience." },
+  { id: "d4", title: "Digital Marketing Staff — Female", job_title: "Digital Marketing Executive", meta: "Permanent | 2 Years Exp. | Bilingual (English/Arabic)", badge: "Online", description: "Plans and implements display, email, social media and web advertising campaigns; evaluates and reports on digital marketing performance against objectives (ROI and KPIs)." }
+];
+
+const GALLERY = [
+  { src: "/images/about_who_we_are.png", tall: false },
+  { src: "/images/about_what_we_do.png", tall: false },
+  { src: "/images/about_student_hero.png", tall: true },
+  { src: "/images/cta_student_boy.png", tall: false }
+];
+
+export default function CareersPage() {
+  const c = usePageContent("careers");
+  const [openId, setOpenId] = useState(null);
+  const [jobs, setJobs] = useState(DEFAULT_JOBS);
+  const values = c.foundation?.values || [];
+  const whyCards = c.why?.cards || [];
+  const faqItems = c.faq?.items || [];
+
+  useEffect(() => {
+    let active = true;
+    async function fetchJobs() {
+      try {
+        const { data, error } = await supabase
+          .from("career_jobs")
+          .select("*")
+          .order("order_index", { ascending: true })
+          .order("created_at", { ascending: false });
+        if (error) throw error;
+        if (active && data && data.length > 0) setJobs(data);
+      } catch (err) {
+        console.warn("Could not load career jobs, using defaults:", err);
+      }
+    }
+    fetchJobs();
+    return () => { active = false; };
+  }, []);
+
+  return (
+    <main className="cr-page">
+      {/* Hero */}
+      <section className="cr-hero">
+        <span className="cr-badge">{c.hero?.badge}</span>
+        <h1>{c.hero?.title} <span>{c.hero?.title_highlight}</span>{c.hero?.title_suffix}</h1>
+        <div className="cr-divider"><span className="line" /><span className="diamond" /><span className="line" /></div>
+        <p>{c.hero?.description}</p>
+      </section>
+
+      {/* Intro */}
+      <div className="cr-intro">
+        <p>{c.intro}</p>
+      </div>
+
+      {/* Gallery */}
+      <div className="cr-gallery">
+        {GALLERY.map((g, i) => (
+          <div key={i} className={`cr-gallery-img ${g.tall ? "tall" : ""}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={g.src} alt="Yaqeen workplace" />
+          </div>
+        ))}
+      </div>
+
+      {/* Foundation Commitment */}
+      <section className="cr-foundation">
+        <div className="cr-head">
+          <h2>{c.foundation?.heading} <span>{c.foundation?.heading_highlight}</span></h2>
+          <p>{c.foundation?.subtitle}</p>
+        </div>
+        <div className="cr-values">
+          {values.map((v, i) => (
+            <div className="cr-value" key={i}>
+              <div className="cr-value-label">
+                <span className="ar">{v.ar}</span>
+                <span className="en">{v.en}</span>
+              </div>
+              <div className="cr-value-desc">{v.desc}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Why Join Us */}
+      <section className="cr-why">
+        <div className="cr-head">
+          <h2>{c.why?.heading}</h2>
+          <p>{c.why?.subtitle}</p>
+        </div>
+        <div className="cr-why-grid">
+          {whyCards.map((w, i) => (
+            <div className="cr-why-card" key={i}>
+              <div className="cr-why-icon">{WHY_ICONS[i % WHY_ICONS.length]}</div>
+              <h3>{w.title}</h3>
+              <p>{w.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Join Our Team */}
+      <section className="cr-jobs">
+        <div className="cr-head">
+          <h2>{c.jobs?.heading} <span>{c.jobs?.heading_highlight}</span></h2>
+          <p>{c.jobs?.subtitle}</p>
+        </div>
+        <div className="cr-jobs-grid">
+          {jobs.map((j) => (
+            <div className="cr-job" key={j.id}>
+              <h3>{j.title}</h3>
+              {j.job_title && <p className="cr-job-title"><b>Job Title:</b> {j.job_title}</p>}
+              {j.meta && <p className="cr-job-meta">{j.meta}</p>}
+              {j.badge && <span className="cr-job-badge">{j.badge}</span>}
+              {j.description && <div className="cr-job-desc" dangerouslySetInnerHTML={{ __html: j.description }} />}
+              <Link href="/teacher-application" className="cr-apply">{c.jobs?.apply_label} <IconArrow /></Link>
+            </div>
+          ))}
+        </div>
+        <div className="cr-center-btn">
+          <Link href="/teacher-application" className="cr-btn-outline">{c.jobs?.become_tutor_label} <IconArrow /></Link>
+        </div>
+      </section>
+
+      {/* Teachers FAQ */}
+      <section className="cr-faq">
+        <div className="cr-head">
+          <span className="cr-faq-badge">{c.faq?.badge}</span>
+          <h2 style={{ marginTop: "16px" }}>{c.faq?.title} <span>{c.faq?.title_highlight}</span></h2>
+        </div>
+        <div className="cr-acc">
+          {faqItems.map((f, i) => {
+            const open = openId === i;
+            return (
+              <div key={i} className={`cr-item ${open ? "open" : ""}`}>
+                <button type="button" className="cr-q" aria-expanded={open} onClick={() => setOpenId(open ? null : i)} suppressHydrationWarning>
+                  <span className="cr-faq-icon">{getFaqIcon(i)}</span>
+                  <span className="cr-qtext">{f.q}</span>
+                  <IconChevron className={`cr-chevron ${open ? "open" : ""}`} />
+                </button>
+                <div className={`cr-a ${open ? "open" : ""}`}>
+                  <div className="cr-a-inner">{f.a}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="cr-center-btn" style={{ marginTop: 0 }}>
+          <Link href="/teacher-application" className="cr-btn-outline">{c.faq?.apply_label} <IconArrow /></Link>
+        </div>
+      </section>
+    </main>
+  );
+}

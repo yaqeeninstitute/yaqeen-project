@@ -1,0 +1,7164 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "@/lib/supabase";
+import Swal from "sweetalert2";
+import "quill/dist/quill.snow.css";
+import AdminChat from "@/components/AdminChat";
+import AdminFooter from "@/components/AdminFooter";
+import AdminLandingPages from "@/components/AdminLandingPages";
+import AdminPages from "@/components/AdminPages";
+import AdminSeo from "@/components/AdminSeo";
+import AdminTopbar from "@/components/AdminTopbar";
+import AdminStaff from "@/components/AdminStaff";
+import AdminDataTable from "@/components/AdminDataTable";
+import { htmlToText } from "@/lib/richtext";
+import { hasTab, canManageStaff, allowedTabs, ADMIN_TABS } from "@/lib/roles";
+
+// Admin SweetAlert theme wrapper to override defaults to match cream theme
+const originalSwalFire = Swal["fire"];
+const adminSwal = {
+  fire: (options) => {
+    const isString = typeof options === "string";
+    const themedOptions = isString ? { title: options } : { ...options };
+    
+    const finalBackground = (themedOptions.background === "#111827" || !themedOptions.background) ? "#fdfcf9" : themedOptions.background;
+    const finalColor = (themedOptions.color === "#fff" || themedOptions.color === "#ffffff" || !themedOptions.color) ? "#2c251e" : themedOptions.color;
+    
+    const finalConfirmButtonColor = (themedOptions.confirmButtonColor === "var(--primary-color)" || !themedOptions.confirmButtonColor)
+      ? "#8c5d31" 
+      : themedOptions.confirmButtonColor;
+      
+    const finalCancelButtonColor = (themedOptions.cancelButtonColor === "var(--card-border)" || !themedOptions.cancelButtonColor)
+      ? "#7c7267" 
+      : themedOptions.cancelButtonColor;
+
+    return originalSwalFire.call(Swal, {
+      ...themedOptions,
+      background: finalBackground,
+      color: finalColor,
+      confirmButtonColor: finalConfirmButtonColor,
+      cancelButtonColor: finalCancelButtonColor
+    });
+  }
+};
+
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "842924769302-4tqdpi3jo87q7438ka4gi0md0urdirbd.apps.googleusercontent.com";
+
+// Blank course form — used for create/reset. Detail-page content fields are optional.
+const EMPTY_COURSE_FORM = {
+  title: "", image_url: "", icon: "book", order_index: 0,
+  short_description: "", description: "",
+  level: "", class_duration: "", course_duration: "", mode: "", age_group: "",
+  learn_points: "", requirements: "", who_for: "",
+  content_details: "", course_modules: "", faqs: "",
+  seo_title: "", seo_description: "", seo_keywords: ""
+};
+
+const slugifyAdmin = (text) =>
+  (text || "").toString().toLowerCase().trim()
+    .replace(/\s+/g, "-").replace(/[^\w-]+/g, "").replace(/--+/g, "-").replace(/^-+|-+$/g, "") || null;
+
+const EMPTY_TEACHER_FORM = {
+  name: "", title: "", avatar_url: "", languages: "", experience: "",
+  specialization: "", education: "", bio: "", order_index: 0,
+  // Detail-page fields (all stored in DB — no static/local fallback)
+  slug: "", gender: "", country: "", headline: "",
+  short_bio: "", long_bio: "", quote: "",
+  education_title: "", education_sub: "",
+  approach_title: "", approach_desc: "",
+  academic_title: "", academic_desc: "",
+  // Per-teacher SEO
+  seo_title: "", seo_description: "", seo_keywords: "",
+  // Per-teacher "About" + "Verified Teachers" blocks (right side of detail page)
+  about_block: {
+    title_line1: "A Friendly, Supportive and",
+    title_highlight: "Professional Teacher",
+    subtitle_rest: "is committed to creating a positive and encouraging learning environment for every student.",
+    features: [
+      { title: "Warm and Approachable", desc: "Creates a comfortable and encouraging learning environment." },
+      { title: "Supportive Teaching Style", desc: "Patient and helpful, making students feel at ease." },
+      { title: "Focused on Your Goals", desc: "Designs lessons to match each student's level and needs." },
+      { title: "Dedicated Educator", desc: "Committed to helping students grow in their Quran and Arabic skills." },
+    ],
+  },
+  verified_block: {
+    badge: "OUR VERIFIED TEACHERS",
+    title_line1: "Dedicated. Experienced.",
+    title_highlight: "Committed to Your Child's Success.",
+    subtitle: "Our teachers are carefully selected to provide high-quality Quran and Arabic education in a safe, respectful, and supportive environment.",
+    cards: [
+      { title: "Qualified & Certified", desc: "Our teachers are verified professionals with recognized qualifications in Quran and Arabic teaching." },
+      { title: "Comprehensive Islamic Education", desc: "We teach Quran recitation, Tajweed, Arabic language, and Islamic studies, tailored to each student's level and goals." },
+      { title: "Male & Female Teachers", desc: "We offer both male and female teachers, so you can choose the best fit for your child's needs and comfort." },
+      { title: "Carefully Vetted Hiring Process", desc: "Every teacher goes through a thorough selection process, including interviews, qualification checks, and background verification, ensuring a safe and positive learning experience." },
+    ],
+  }
+};
+
+// Reusable Quill Rich Text Editor Component
+function RichTextEditor({ value, onChange, placeholder = "Write content here...", minHeight = "200px" }) {
+  const containerRef = useRef(null);
+  const quillInstance = useRef(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (containerRef.current && !quillInstance.current) {
+      import("quill").then(({ default: Quill }) => {
+        if (!isMounted || !containerRef.current || quillInstance.current) return;
+
+        const quill = new Quill(containerRef.current, {
+          theme: "snow",
+          placeholder,
+          modules: {
+            toolbar: [
+              [{ header: [1, 2, 3, 4, false] }],
+              ["bold", "italic", "underline", "strike"],
+              [{ list: "ordered" }, { list: "bullet" }],
+              ["link", "blockquote", "code-block"],
+              ["clean"]
+            ]
+          }
+        });
+
+        quillInstance.current = quill;
+
+        if (value) {
+          quill.root.innerHTML = value;
+        }
+
+        quill.on("text-change", () => {
+          const html = quill.root.innerHTML;
+          const cleaned = html === "<p><br></p>" ? "" : html;
+          onChange(cleaned);
+        });
+      });
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (quillInstance.current) {
+      const currentHtml = quillInstance.current.root.innerHTML;
+      const normalizedCurrent = currentHtml === "<p><br></p>" ? "" : currentHtml;
+      const normalizedVal = value || "";
+      if (normalizedVal !== normalizedCurrent) {
+        quillInstance.current.root.innerHTML = normalizedVal;
+      }
+    }
+  }, [value]);
+
+  return (
+    <div className="quill-editor-container" style={{ position: "relative" }}>
+      <div ref={containerRef} style={{ minHeight }} />
+    </div>
+  );
+}
+
+export default function AdminDashboard() {
+  // Authentication states
+  const [emailInput, setEmailInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [otpInput, setOtpInput] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isVerifyingSession, setIsVerifyingSession] = useState(true);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [gitInfo, setGitInfo] = useState("");
+  const [geoRestricted, setGeoRestricted] = useState(false);
+  const [detectedGeo, setDetectedGeo] = useState({ country: "", ip: "" });
+
+  // Admin account management states
+  const [adminAccounts, setAdminAccounts] = useState([]);
+  const [newAdminEmail, setNewAdminEmail] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
+
+  // Profile management states
+  const [profileForm, setProfileForm] = useState({
+    email: "",
+    password: "",
+    logo_text: "",
+    logo_url: "",
+    admin_loader_logo_url: "",
+    notification_emails: "",
+    contact_email: "",
+    contact_phone: "",
+    contact_hours: "",
+    contact_support: "",
+    social_facebook: "",
+    social_instagram: "",
+    social_youtube: "",
+    social_whatsapp: "",
+    google_tag_id: "",
+    header_scripts: "",
+    body_scripts: "",
+    footer_scripts: ""
+  });
+  const [logoText, setLogoText] = useState("yaqeen");
+  const [logoUrl, setLogoUrl] = useState("");
+  // Admin loader / login logo (falls back to the site logo when empty)
+  const [adminLoaderLogo, setAdminLoaderLogo] = useState("");
+
+  // Logged-in staff identity + permissions (gates which sidebar tabs are shown)
+  const [currentAdmin, setCurrentAdmin] = useState(null);
+
+  // Data states
+  const [blogs, setBlogs] = useState([]);
+  const [contacts, setContacts] = useState([]);
+  const [newsletterSubscribers, setNewsletterSubscribers] = useState([]);
+  const [leadsCount, setLeadsCount] = useState(0);
+  const [seoSettings, setSeoSettings] = useState({ title: "", description: "", keywords: "", favicon_url: "" });
+  const [activeTab, setActiveTab] = useState("overview"); // overview, blogs, contacts, seo, profile
+  const [geoFilter, setGeoFilter] = useState("all"); // 'all' | 'trials' | 'students' | 'inquiries'
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [backupLoading, setBackupLoading] = useState(false);
+  // Custom sitemap.xml / robots.txt upload state. When `active`, the uploaded
+  // file is served at /sitemap.xml or /robots.txt and overrides the generated one.
+  const [customFiles, setCustomFiles] = useState({
+    sitemap: { active: false, content: "" },
+    robots: { active: false, content: "" },
+  });
+  const [customFilesBusy, setCustomFilesBusy] = useState("");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false); // hamburger drawer on mobile
+
+  // Teachers management states
+  const [teachers, setTeachers] = useState([]);
+  const [isEditingTeacher, setIsEditingTeacher] = useState(false);
+  const [editingTeacherId, setEditingTeacherId] = useState(null);
+  const [teacherForm, setTeacherForm] = useState(EMPTY_TEACHER_FORM);
+
+  // Testimonials management states
+  const [testimonials, setTestimonials] = useState([]);
+  const [teacherApps, setTeacherApps] = useState([]);
+  const [studentApps, setStudentApps] = useState([]);
+  const [careerJobs, setCareerJobs] = useState([]);
+  const [isEditingJob, setIsEditingJob] = useState(false);
+  const [editingJobId, setEditingJobId] = useState(null);
+  const [jobForm, setJobForm] = useState({ title: "", job_title: "", meta: "", badge: "Online", description: "", order_index: 0 });
+  const [isEditingTestimonial, setIsEditingTestimonial] = useState(false);
+  const [editingTestimonialId, setEditingTestimonialId] = useState(null);
+  const [testimonialForm, setTestimonialForm] = useState({
+    name: "",
+    role: "",
+    content: "",
+    avatar_url: "",
+    page_targets: {
+      all: true,
+      home: false,
+      about: false,
+      courses: false,
+      pricing: false
+    },
+    order_index: 0
+  });
+
+  // Courses management states
+  const [courses, setCourses] = useState([]);
+  const [isEditingCourse, setIsEditingCourse] = useState(false);
+  const [editingCourseId, setEditingCourseId] = useState(null);
+  const [courseForm, setCourseForm] = useState(EMPTY_COURSE_FORM);
+
+  // Pricing plans states
+  const [plans, setPlans] = useState([]);
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [editingPlanId, setEditingPlanId] = useState(null);
+  const [planForm, setPlanForm] = useState({
+    name: "",
+    subtitle: "",
+    price: "",
+    price_usd: "",
+    price_gbp: "",
+    price_aed: "",
+    period: "/hour",
+    icon: "plane",
+    badge: "",
+    features: [],
+    order_index: 0
+  });
+  const [newFeatureText, setNewFeatureText] = useState("");
+  const [newFeatureIncluded, setNewFeatureIncluded] = useState(true);
+
+  // Selected contact details popup state
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [selectedTeacherApp, setSelectedTeacherApp] = useState(null);
+  const [selectedStudentApp, setSelectedStudentApp] = useState(null);
+
+  // Blog editor form states
+  const [isEditingBlog, setIsEditingBlog] = useState(false);
+  const [editingBlogId, setEditingBlogId] = useState(null);
+  const [blogForm, setBlogForm] = useState({
+    title: "",
+    slug: "",
+    category: "General",
+    read_time: "5 min read",
+    author: "Admin Team",
+    featured_image: "",
+    quote: "",
+    quote_source: "",
+    body: "",
+    second_quote: "",
+    second_quote_source: "",
+    seo_title: "",
+    seo_description: "",
+    seo_keywords: ""
+  });
+  // Dynamic list sections for blog post
+  const [blogSections, setBlogSections] = useState([{ title: "", content: "" }]);
+
+  // Refs for Quill Editor
+  const quillRef = useRef(null);
+  const quillInstanceRef = useRef(null);
+
+  // Initialize Quill Editor dynamically on Client Side
+  useEffect(() => {
+    let active = true;
+
+    if (isEditingBlog && quillRef.current && !quillInstanceRef.current) {
+      import("quill").then(({ default: Quill }) => {
+        if (!active || !quillRef.current || quillInstanceRef.current) return;
+
+        const quill = new Quill(quillRef.current, {
+          theme: "snow",
+          placeholder: "Write your article body content here...",
+          modules: {
+            toolbar: [
+              [{ header: [1, 2, 3, false] }],
+              ["bold", "italic", "underline", "strike"],
+              [{ list: "ordered" }, { list: "bullet" }],
+              ["link", "blockquote", "code-block"],
+              ["clean"]
+            ]
+          }
+        });
+
+        quillInstanceRef.current = quill;
+
+        // Load initial content
+        if (blogForm.body) {
+          quill.root.innerHTML = blogForm.body;
+        }
+
+        // Listen for changes
+        quill.on("text-change", () => {
+          const html = quill.root.innerHTML;
+          setBlogForm((prev) => {
+            if (prev.body === html) return prev;
+            return { ...prev, body: html };
+          });
+        });
+      });
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [isEditingBlog]);
+
+  // Clean editor ref on closing edit view
+  useEffect(() => {
+    if (!isEditingBlog) {
+      quillInstanceRef.current = null;
+    }
+  }, [isEditingBlog]);
+
+  // Synchronize external edits (like resetting or loading edit states) with the Quill Editor
+  useEffect(() => {
+    if (quillInstanceRef.current) {
+      const editorHtml = quillInstanceRef.current.root.innerHTML;
+      if (blogForm.body !== editorHtml && (blogForm.body !== "" || editorHtml !== "<p><br></p>")) {
+        quillInstanceRef.current.root.innerHTML = blogForm.body || "";
+      }
+    }
+  }, [blogForm.body]);
+
+  const exportToExcel = (data, fileName) => {
+    const headers = [
+      "Name",
+      "Email",
+      "Phone",
+      "Country",
+      "Subject",
+      "Session For",
+      "Preferred Teacher",
+      "Preferred Date",
+      "Preferred Time",
+      "Booked On",
+      "City",
+      "State",
+      "Provider",
+      "IP Address",
+      "Message Content"
+    ];
+
+    const rows = data.map(item => {
+      const msgLines = (item.message || "").split("\n");
+      const getVal = (prefix) => {
+        const line = msgLines.find(l => l.trim().startsWith(prefix));
+        return line ? line.split(prefix)[1].trim() : "";
+      };
+
+      const name = getVal("Name:");
+      const email = getVal("Email:");
+      const phone = getVal("Phone:");
+      const country = getVal("Country:");
+      const interestedIn = getVal("Interested In:");
+      const sessionFor = getVal("Session For:");
+      const preferredTeacher = getVal("Preferred Teacher:");
+      const preferredDate = getVal("Preferred Date:");
+      const preferredTime = getVal("Preferred Time:");
+
+      return [
+        name || item.name || "",
+        email || item.email || "",
+        phone || "",
+        country || item.country || "",
+        interestedIn || item.subject || "",
+        sessionFor || "",
+        preferredTeacher || "",
+        preferredDate || "",
+        preferredTime || "",
+        item.created_at ? new Date(item.created_at).toLocaleString() : "",
+        item.city || "",
+        item.state || "",
+        item.provider || "",
+        item.ip_address || "",
+        item.message || ""
+      ];
+    });
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => 
+        row.map(val => {
+          const stringVal = String(val).replace(/"/g, '""');
+          return `"${stringVal}"`;
+        }).join(",")
+      )
+    ].join("\r\n");
+
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${fileName}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportTeachersToExcel = (data, fileName) => {
+    const headers = [
+      "First Name",
+      "Last Name",
+      "Gender",
+      "Email",
+      "Phone",
+      "Country",
+      "Date of Birth",
+      "Nationality",
+      "Occupation",
+      "Marital Status",
+      "Applying For",
+      "Has Ijazah?",
+      "Teaches Tajweed in English?",
+      "Has Children?",
+      "Preferred Interview Time",
+      "Expected Salary",
+      "Hours per Week",
+      "Employment Type",
+      "CV URL",
+      "Reading Audio URL",
+      "Recitation Audio URL",
+      "Applied On",
+      "About Me",
+      "Ideal Candidate Essay"
+    ];
+
+    const rows = data.map(item => [
+      item.first_name || "",
+      item.last_name || "",
+      item.gender || "",
+      item.email || "",
+      `${item.dial_code || ""} ${item.mobile || ""}`.trim(),
+      item.country || "",
+      item.date_of_birth || "",
+      item.nationality || "",
+      item.occupation || "",
+      item.marital_status || "",
+      item.applying_for || "",
+      item.has_ijazah ? "Yes" : "No",
+      item.teach_tajweed_english ? "Yes" : "No",
+      item.has_children || "",
+      item.preferred_interview_time || "",
+      item.expected_salary || "",
+      item.hours_per_week || "",
+      item.employment_type || "",
+      item.cv_url || "",
+      item.reading_audio_url || "",
+      item.recitation_audio_url || "",
+      item.created_at ? new Date(item.created_at).toLocaleString() : "",
+      item.about_me || "",
+      item.ideal_candidate || ""
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => 
+        row.map(val => {
+          const stringVal = String(val).replace(/"/g, '""');
+          return `"${stringVal}"`;
+        }).join(",")
+      )
+    ].join("\r\n");
+
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${fileName}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportStudentsToExcel = (data, fileName) => {
+    const headers = [
+      "First Name",
+      "Last Name",
+      "Email",
+      "Age Group",
+      "Gender",
+      "Phone",
+      "Country",
+      "Course",
+      "Hours per Week",
+      "Pricing Plan",
+      "Monthly Price",
+      "Preferred Days",
+      "Preferred Date",
+      "Preferred Time",
+      "Registered On"
+    ];
+
+    const rows = data.map(item => [
+      item.first_name || "",
+      item.last_name || "",
+      item.email || "",
+      item.age_group || "",
+      item.gender || "",
+      `${item.dial_code || ""} ${item.mobile || ""}`.trim(),
+      item.country || "",
+      item.course || "",
+      item.hours_per_week || "",
+      item.pricing_plan || "",
+      item.monthly_price || "",
+      item.preferred_days || "",
+      item.preferred_date || "",
+      item.preferred_time || "",
+      item.created_at ? new Date(item.created_at).toLocaleString() : ""
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => 
+        row.map(val => {
+          const stringVal = String(val).replace(/"/g, '""');
+          return `"${stringVal}"`;
+        }).join(",")
+      )
+    ].join("\r\n");
+
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${fileName}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+
+  const fetchDashboardData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch blogs
+      const { data: blogData, error: blogErr } = await supabase
+        .from("blogs")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!blogErr) setBlogs(blogData || []);
+
+      // 2. Fetch contacts
+      const { data: contactData, error: contactErr } = await supabase
+        .from("contacts")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!contactErr) setContacts(contactData || []);
+
+      // 3. Fetch leads count
+      const { count: lCount, error: leadErr } = await supabase
+        .from("leads")
+        .select("*", { count: "exact", head: true });
+      if (!leadErr) setLeadsCount(lCount || 0);
+
+      // 4. Fetch global SEO settings
+      const { data: seoData, error: seoErr } = await supabase
+        .from("seo_settings")
+        .select("title, description, keywords, favicon_url")
+        .eq("id", "global")
+        .single();
+      if (!seoErr && seoData) {
+        setSeoSettings({
+          title: seoData.title || "",
+          description: seoData.description || "",
+          keywords: seoData.keywords || "",
+          favicon_url: seoData.favicon_url || ""
+        });
+      }
+
+      // 5. Fetch teachers
+      const { data: teacherData, error: teacherErr } = await supabase
+        .from("teachers")
+        .select("*")
+        .order("order_index", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (!teacherErr) setTeachers(teacherData || []);
+
+      // 6. Fetch testimonials
+      const { data: testimonialData, error: testimonialErr } = await supabase
+        .from("testimonials")
+        .select("*")
+        .order("order_index", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (!testimonialErr) setTestimonials(testimonialData || []);
+
+      // 6b. Fetch teacher applications (table may not exist yet — fail silently)
+      const { data: teacherAppData, error: teacherAppErr } = await supabase
+        .from("teacher_applications")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!teacherAppErr) setTeacherApps(teacherAppData || []);
+
+      // 6d. Fetch student applications (table may not exist yet — fail silently)
+      const { data: studentAppData, error: studentAppErr } = await supabase
+        .from("student_applications")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!studentAppErr) setStudentApps(studentAppData || []);
+
+      // 6c. Fetch career job openings (table may not exist yet — fail silently)
+      const { data: jobData, error: jobErr } = await supabase
+        .from("career_jobs")
+        .select("*")
+        .order("order_index", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (!jobErr) setCareerJobs(jobData || []);
+
+      // 7. Fetch courses
+      const { data: courseData, error: courseErr } = await supabase
+        .from("courses")
+        .select("*")
+        .order("order_index", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (!courseErr) setCourses(courseData || []);
+
+      // 8. Fetch pricing plans
+      const { data: planData, error: planErr } = await supabase
+        .from("pricing_plans")
+        .select("*")
+        .order("order_index", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (!planErr) setPlans(planData || []);
+
+      // 9. Fetch newsletter subscribers
+      try {
+        const { data: subData, error: subErr } = await supabase
+          .from("newsletter_subscribers")
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (!subErr && subData && subData.length > 0) {
+          setNewsletterSubscribers(subData);
+        } else {
+          const token = localStorage.getItem("aero_admin_token");
+          if (token) {
+            const res = await fetch("/api/newsletter", { headers: { Authorization: `Bearer ${token}` } });
+            const d = await res.json();
+            if (d.success && d.subscribers) setNewsletterSubscribers(d.subscribers);
+          }
+        }
+      } catch (subFetchErr) {
+        console.warn("Could not load newsletter subscribers:", subFetchErr);
+      }
+    } catch (err) {
+      console.error("Error loading dashboard data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchProfileData = async () => {
+    const token = localStorage.getItem("aero_admin_token");
+    if (!token) return;
+    try {
+      const res = await fetch("/api/admin/profile", {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (data.success) {
+        setProfileForm({
+          email: data.email,
+          password: data.password,
+          logo_text: data.logo_text || "",
+          logo_url: data.logo_url || "",
+          admin_loader_logo_url: data.admin_loader_logo_url || "",
+          notification_emails: data.notification_emails || "",
+          contact_email: data.contact_email || "",
+          contact_phone: data.contact_phone || "",
+          contact_hours: data.contact_hours || "",
+          contact_support: data.contact_support || "",
+          social_facebook: data.social_facebook || "",
+          social_instagram: data.social_instagram || "",
+          social_youtube: data.social_youtube || "",
+          social_whatsapp: data.social_whatsapp || "",
+          google_tag_id: data.google_tag_id || "",
+          header_scripts: data.header_scripts || "",
+          body_scripts: data.body_scripts || "",
+          footer_scripts: data.footer_scripts || ""
+        });
+        setLogoText(data.logo_text || "yaqeen");
+        setLogoUrl(data.logo_url || "");
+        setCurrentAdmin({ full_name: data.full_name || "", role: data.role || "super_admin", status: data.status || "active", permissions: Array.isArray(data.permissions) ? data.permissions : [] });
+        // Also load whether a custom sitemap/robots is currently uploaded.
+        loadCustomFiles();
+      }
+    } catch (err) {
+      console.error("Error loading profile settings:", err);
+    }
+  };
+
+  // Load dynamic logo on mount
+  useEffect(() => {
+    async function loadLogo() {
+      try {
+        const { data, error } = await supabase
+          .from("site_settings")
+          .select("*")
+          .eq("id", "global")
+          .single();
+        if (data) {
+          setLogoText(data.logo_text || "yaqeen");
+          setLogoUrl(data.logo_url || "");
+          setAdminLoaderLogo(data.admin_loader_logo_url || "");
+        }
+      } catch (err) {
+        console.warn("Could not load logo from site_settings:", err);
+      }
+    }
+    async function fetchGitInfo() {
+      try {
+        const res = await fetch("/api/admin/git-info");
+        const data = await res.json();
+        if (data.success) {
+          setGitInfo(data.lastUpdate);
+        }
+      } catch (err) {
+        console.warn("Could not fetch git info:", err);
+      }
+    }
+    loadLogo();
+    fetchGitInfo();
+  }, []);
+
+  // Load passcode and tab state from local storage on mount
+  useEffect(() => {
+    const token = localStorage.getItem("aero_admin_token");
+    if (token) {
+      // Optimistically assume authenticated to prevent reload/compilation logout flashes
+      setIsAuthenticated(true);
+      setIsVerifyingSession(false);
+
+      const validateSession = async () => {
+        try {
+          const res = await fetch("/api/admin/profile", {
+            headers: {
+              Authorization: `Bearer ${token}`
+            }
+          });
+          const data = await res.json();
+          if (data.success) {
+            setProfileForm({
+              email: data.email,
+              password: data.password,
+              logo_text: data.logo_text || "",
+              logo_url: data.logo_url || "",
+              admin_loader_logo_url: data.admin_loader_logo_url || "",
+              notification_emails: data.notification_emails || "",
+              contact_email: data.contact_email || "",
+              contact_phone: data.contact_phone || "",
+              contact_hours: data.contact_hours || "",
+              contact_support: data.contact_support || "",
+              social_facebook: data.social_facebook || "",
+              social_instagram: data.social_instagram || "",
+              social_youtube: data.social_youtube || "",
+              social_whatsapp: data.social_whatsapp || "",
+              google_tag_id: data.google_tag_id || "",
+              header_scripts: data.header_scripts || "",
+              body_scripts: data.body_scripts || "",
+              footer_scripts: data.footer_scripts || ""
+            });
+            setLogoText(data.logo_text || "yaqeen");
+            setLogoUrl(data.logo_url || "");
+            setCurrentAdmin({ full_name: data.full_name || "", role: data.role || "super_admin", status: data.status || "active", permissions: Array.isArray(data.permissions) ? data.permissions : [] });
+          } else {
+            // Server explicitly rejects token (e.g. expired session)
+            localStorage.removeItem("aero_admin_token");
+            setIsAuthenticated(false);
+            adminSwal.fire({
+              icon: "warning",
+              title: "Session Expired",
+              text: "Your admin session has expired. Please log in again.",
+              confirmButtonColor: "var(--primary-color)",
+              background: "#111827",
+              color: "#fff"
+            });
+          }
+        } catch (err) {
+          console.warn("Silent session verification network check skipped:", err);
+          // Do not delete token or logout on network/server-compiling errors
+        }
+      };
+      validateSession();
+    } else {
+      setIsVerifyingSession(false);
+    }
+
+    const savedTab = localStorage.getItem("aero_admin_tab");
+    if (savedTab) {
+      setTimeout(() => {
+        setActiveTab(savedTab);
+      }, 0);
+    }
+  }, []);
+
+  // 10-minute Idle / Inactivity Auto-Logout Manager
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+    let timeoutId;
+
+    const performAutoLogout = () => {
+      localStorage.removeItem("aero_admin_token");
+      localStorage.removeItem("aero_admin_last_active");
+      setIsAuthenticated(false);
+      setOtpSent(false);
+      adminSwal.fire({
+        icon: "info",
+        title: "Session Expired",
+        text: "You have been logged out due to 10 minutes of inactivity.",
+        confirmButtonColor: "#8c5d31",
+        background: "#FFFDF9",
+        color: "#2C251E"
+      });
+    };
+
+    const updateActivity = () => {
+      const now = Date.now();
+      localStorage.setItem("aero_admin_last_active", String(now));
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(performAutoLogout, INACTIVITY_TIMEOUT_MS);
+    };
+
+    // Check if session was already idle before page reload / tab switch
+    const lastActiveStr = localStorage.getItem("aero_admin_last_active");
+    if (lastActiveStr) {
+      const elapsed = Date.now() - Number(lastActiveStr);
+      if (elapsed >= INACTIVITY_TIMEOUT_MS) {
+        performAutoLogout();
+        return;
+      } else {
+        timeoutId = setTimeout(performAutoLogout, INACTIVITY_TIMEOUT_MS - elapsed);
+      }
+    } else {
+      updateActivity();
+    }
+
+    const activityEvents = ["mousedown", "mousemove", "keydown", "scroll", "touchstart", "click"];
+    let lastThrottled = 0;
+
+    const handleUserActivity = () => {
+      const now = Date.now();
+      if (now - lastThrottled > 5000) { // Throttle updates to once every 5 seconds
+        lastThrottled = now;
+        updateActivity();
+      }
+    };
+
+    activityEvents.forEach((evt) => window.addEventListener(evt, handleUserActivity, { passive: true }));
+
+    return () => {
+      clearTimeout(timeoutId);
+      activityEvents.forEach((evt) => window.removeEventListener(evt, handleUserActivity));
+    };
+  }, [isAuthenticated]);
+
+  // Fetch admin dashboard metrics and records
+  useEffect(() => {
+    if (isAuthenticated) {
+      setTimeout(() => {
+        fetchDashboardData();
+        fetchProfileData();
+      }, 0);
+    }
+  }, [isAuthenticated]);
+
+  // If a staff member lands on a tab they aren't allowed to see, send them to
+  // the first section they do have access to.
+  useEffect(() => {
+    if (!currentAdmin) return;
+    if (!hasTab(currentAdmin, activeTab)) {
+      const first = allowedTabs(currentAdmin)[0] || "profile";
+      setActiveTab(first);
+    }
+  }, [currentAdmin, activeTab]);
+
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    try {
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput, password: passwordInput })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setOtpSent(true);
+        adminSwal.fire({
+          icon: "success",
+          title: "OTP Sent!",
+          text: data.message || ("Verification code sent to " + emailInput),
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      } else {
+        adminSwal.fire({
+          icon: "error",
+          title: "Login Failed",
+          text: data.message || "Invalid credentials",
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      }
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Connection Error",
+        text: "Could not connect to authentication server.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleVerifyOtpSubmit = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    try {
+      const res = await fetch("/api/admin/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput, otp: otpInput })
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem("aero_admin_token", data.sessionToken);
+        localStorage.setItem("aero_admin_last_active", String(Date.now()));
+        setIsAuthenticated(true);
+        adminSwal.fire({
+          icon: "success",
+          title: "Access Granted",
+          text: "Authenticated successfully!",
+          timer: 1500,
+          showConfirmButton: false,
+          background: "#111827",
+          color: "#fff"
+        });
+      } else {
+        adminSwal.fire({
+          icon: "error",
+          title: "Verification Failed",
+          text: data.message || "Invalid OTP code",
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      }
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Connection Error",
+        text: "Could not connect to authentication server.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleCancelOtp = () => {
+    setOtpSent(false);
+    setOtpInput("");
+  };
+
+  // Google Single Sign-On (SSO) Handler
+  const handleGoogleAuth = async ({ credential, code, redirectUri }) => {
+    setAuthLoading(true);
+    try {
+      const res = await fetch("/api/admin/google-sso", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential, code, redirectUri })
+      });
+      const data = await res.json();
+      if (data.success && data.sessionToken) {
+        localStorage.setItem("aero_admin_token", data.sessionToken);
+        localStorage.setItem("aero_admin_last_active", String(Date.now()));
+        setIsAuthenticated(true);
+        setOtpSent(false);
+        adminSwal.fire({
+          icon: "success",
+          title: "Welcome Back!",
+          text: `Logged in via Google SSO as ${data.admin?.email || "Admin"}. No OTP required.`,
+          timer: 1800,
+          showConfirmButton: false,
+          background: "#111827",
+          color: "#fff"
+        });
+      } else {
+        adminSwal.fire({
+          icon: "error",
+          title: "Access Denied",
+          text: data.message || "Google authentication failed. Only registered admin users are allowed.",
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      }
+    } catch (err) {
+      console.error("Google SSO error:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Connection Error",
+        text: "Could not connect to Google SSO authentication service.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // Trigger Google SSO via Google Identity Services or standard OAuth redirect
+  const triggerGoogleSignIn = () => {
+    if (typeof window === "undefined") return;
+
+    if (window.google?.accounts?.id) {
+      try {
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: (resp) => {
+            if (resp?.credential) {
+              handleGoogleAuth({ credential: resp.credential });
+            }
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true
+        });
+        window.google.accounts.id.prompt((notification) => {
+          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+            redirectToGoogleOAuth();
+          }
+        });
+        return;
+      } catch (e) {
+        console.warn("GIS prompt fallback:", e);
+      }
+    }
+
+    redirectToGoogleOAuth();
+  };
+
+  const redirectToGoogleOAuth = () => {
+    const redirectUri = window.location.origin + "/admin";
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
+      GOOGLE_CLIENT_ID
+    )}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&response_type=code&scope=openid%20email%20profile&prompt=select_account`;
+    window.location.href = authUrl;
+  };
+
+  // Listen for Google GIS client, OAuth redirect parameters, and Geo-Fencing check
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Check India-only Geo Access
+    fetch("/api/admin/geo-check")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && d.allowed === false) {
+          setGeoRestricted(true);
+          setDetectedGeo({ country: d.country || "Non-India", ip: d.ip || "" });
+        }
+      })
+      .catch(() => {});
+
+    // Check OAuth redirect ?code=...
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get("code");
+    if (code) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      handleGoogleAuth({ code, redirectUri: window.location.origin + "/admin" });
+    }
+
+    // Load Google Identity Services script if not already present
+    if (!document.getElementById("google-gsi-client")) {
+      const script = document.createElement("script");
+      script.id = "google-gsi-client";
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        if (window.google?.accounts?.id) {
+          window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: (resp) => {
+              if (resp?.credential) {
+                handleGoogleAuth({ credential: resp.credential });
+              }
+            }
+          });
+        }
+      };
+      document.body.appendChild(script);
+    }
+  }, []);
+
+  const handleLogout = async () => {
+    const result = await adminSwal.fire({
+      title: "Logout?",
+      text: "Are you sure you want to logout from the admin console?",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonColor: "var(--primary-color)",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, logout",
+      background: "#111827",
+      color: "#fff"
+    });
+
+    if (result.isConfirmed) {
+      setIsAuthenticated(false);
+      setOtpSent(false);
+      setEmailInput("");
+      setPasswordInput("");
+      setOtpInput("");
+      localStorage.removeItem("aero_admin_token");
+      localStorage.removeItem("aero_admin_last_active");
+      adminSwal.fire({
+        icon: "success",
+        title: "Logged Out",
+        text: "You have been logged out successfully.",
+        timer: 1500,
+        showConfirmButton: false,
+        background: "#111827",
+        color: "#fff"
+      });
+    }
+  };
+
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    localStorage.setItem("aero_admin_tab", tab);
+    setMobileNavOpen(false);
+    if (tab === "profile") fetchAdminAccounts();
+    setIsEditingBlog(false);
+    setIsEditingTeacher(false);
+    setIsEditingTestimonial(false);
+    setIsEditingCourse(false);
+    setIsEditingPlan(false);
+    setIsEditingJob(false);
+  };
+
+  // Free-trial bookings arrive through the contact form pipeline with a "Free Trial Booking" subject.
+  // Split them out so they get their own admin menu, keeping the Contact Inbox for real inquiries only.
+  const FREE_TRIAL_PREFIX = "Free Trial Booking";
+  const freeTrials = contacts.filter((c) => (c.subject || "").startsWith(FREE_TRIAL_PREFIX));
+  const inquiries = contacts.filter((c) => !(c.subject || "").startsWith(FREE_TRIAL_PREFIX));
+
+  // Upload the admin loader / login logo (separate from the site logo).
+  const handleAdminLogoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLoading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const filePath = `logos/adminlogo_${Date.now()}.${fileExt}`;
+      const { error: uploadError } = await supabase.storage.from("blog-images").upload(filePath, file);
+      if (uploadError) throw uploadError;
+      const { data } = supabase.storage.from("blog-images").getPublicUrl(filePath);
+      setProfileForm((prev) => ({ ...prev, admin_loader_logo_url: data.publicUrl }));
+      setAdminLoaderLogo(data.publicUrl);
+      adminSwal.fire({ icon: "success", title: "Admin Logo Uploaded!", text: "Click 'Save Settings & Credentials' below to save.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      adminSwal.fire({ icon: "error", title: "Upload Failed", text: err.message || "Failed to upload logo.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const fileName = `logo_${Date.now()}.${fileExt}`;
+      const filePath = `logos/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("blog-images")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from("blog-images")
+        .getPublicUrl(filePath);
+
+      setProfileForm((prev) => ({
+        ...prev,
+        logo_url: data.publicUrl
+      }));
+      setLogoUrl(data.publicUrl);
+      
+      adminSwal.fire({
+        icon: "success",
+        title: "Logo Uploaded!",
+        text: "Make sure to click 'Save Credentials' below to save changes.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      console.error("Logo upload failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Upload Failed",
+        text: err.message || "Failed to upload logo image.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem("aero_admin_token");
+    if (!token) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/profile", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          email: profileForm.email,
+          password: profileForm.password,
+          logo_text: profileForm.logo_text,
+          logo_url: profileForm.logo_url,
+          admin_loader_logo_url: profileForm.admin_loader_logo_url,
+          notification_emails: profileForm.notification_emails,
+          contact_email: profileForm.contact_email,
+          contact_phone: profileForm.contact_phone,
+          contact_hours: profileForm.contact_hours,
+          contact_support: profileForm.contact_support,
+          social_facebook: profileForm.social_facebook,
+          social_instagram: profileForm.social_instagram,
+          social_youtube: profileForm.social_youtube,
+          social_whatsapp: profileForm.social_whatsapp,
+          google_tag_id: profileForm.google_tag_id,
+          header_scripts: profileForm.header_scripts,
+          body_scripts: profileForm.body_scripts,
+          footer_scripts: profileForm.footer_scripts
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setLogoText(profileForm.logo_text);
+        setLogoUrl(profileForm.logo_url);
+        setAdminLoaderLogo(profileForm.admin_loader_logo_url);
+        adminSwal.fire({
+          icon: "success",
+          title: "Profile Updated!",
+          text: "Admin credentials successfully updated.",
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      } else {
+        adminSwal.fire({
+          icon: "error",
+          title: "Update Failed",
+          text: data.message || "Could not update credentials",
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      }
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Connection Error",
+        text: "Could not save profile settings.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- ADMIN ACCOUNTS ACTIONS ---
+  const fetchAdminAccounts = async () => {
+    const token = localStorage.getItem("aero_admin_token");
+    if (!token) return;
+    try {
+      const res = await fetch("/api/admin/accounts", { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.success) setAdminAccounts(data.accounts || []);
+    } catch (err) {
+      console.warn("Could not load admin accounts:", err);
+    }
+  };
+
+  const handleCreateAdmin = async (e) => {
+    e.preventDefault();
+    if (!newAdminEmail.trim() || !newAdminPassword.trim()) {
+      adminSwal.fire({ icon: "warning", title: "Missing details", text: "Please enter both email and password.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+      return;
+    }
+    setLoading(true);
+    try {
+      const token = localStorage.getItem("aero_admin_token");
+      const res = await fetch("/api/admin/accounts", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ email: newAdminEmail.trim(), password: newAdminPassword.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || "Failed to create account.");
+      setNewAdminEmail("");
+      setNewAdminPassword("");
+      fetchAdminAccounts();
+      adminSwal.fire({ icon: "success", title: "Admin Added", text: "The new admin can now log in with their email & password (an OTP will be emailed to them).", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      adminSwal.fire({ icon: "error", title: "Failed", text: err.message, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteAdmin = async (id) => {
+    const result = await adminSwal.fire({ title: "Remove admin?", text: "This admin will no longer be able to log in.", icon: "warning", showCancelButton: true, confirmButtonColor: "#ef4444", cancelButtonColor: "var(--card-border)", confirmButtonText: "Yes, remove", background: "#111827", color: "#fff" });
+    if (!result.isConfirmed) return;
+    setLoading(true);
+    try {
+      const token = localStorage.getItem("aero_admin_token");
+      const res = await fetch(`/api/admin/accounts?id=${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || "Failed to delete account.");
+      fetchAdminAccounts();
+      adminSwal.fire({ icon: "success", title: "Removed", text: data.message, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      adminSwal.fire({ icon: "error", title: "Failed", text: err.message, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGenerateSitemap = async () => {
+    const { value: siteUrl } = await adminSwal.fire({
+      title: "Generate XML Sitemap",
+      text: "Please enter your live website domain URL:",
+      input: "text",
+      inputValue: window.location.origin || "https://yaqeeninstitute.online",
+      showCancelButton: true,
+      inputPlaceholder: "https://yaqeeninstitute.online",
+      confirmButtonText: "Generate Now",
+      cancelButtonText: "Cancel",
+      inputValidator: (value) => {
+        if (!value) {
+          return "Website URL is required!";
+        }
+        if (!/^https?:\/\//i.test(value)) {
+          return "URL must start with http:// or https://";
+        }
+      }
+    });
+
+    if (!siteUrl) return;
+
+    adminSwal.fire({
+      title: "Generating Sitemap...",
+      text: "Please wait while we index the pages and build the XML sitemap file.",
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      }
+    });
+
+    try {
+      const token = localStorage.getItem("aero_admin_token");
+      const res = await fetch("/api/admin/generate-sitemap", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ siteUrl })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        adminSwal.fire({
+          icon: "success",
+          title: "Sitemap Generated!",
+          text: `Successfully generated and updated sitemap! It contains ${data.urlCount} pages and is live at /sitemap.xml.`,
+          confirmButtonColor: "var(--primary-color)"
+        });
+      } else {
+        throw new Error(data.message || "Failed to generate sitemap.");
+      }
+    } catch (err) {
+      console.error("Sitemap generation failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Generation Failed",
+        text: err.message || "Something went wrong while generating the sitemap.",
+        confirmButtonColor: "#ef4444"
+      });
+    }
+  };
+
+  // Load whether a custom sitemap.xml / robots.txt is currently uploaded.
+  const loadCustomFiles = async () => {
+    try {
+      const token = localStorage.getItem("aero_admin_token");
+      if (!token) return;
+      const res = await fetch("/api/admin/sitemap-files", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.success) {
+        setCustomFiles({
+          sitemap: { active: data.sitemap.active, content: data.sitemap.content || "" },
+          robots: { active: data.robots.active, content: data.robots.content || "" },
+        });
+      }
+    } catch (err) {
+      console.warn("Could not load custom sitemap/robots state:", err.message);
+    }
+  };
+
+  // Upload a custom sitemap.xml or robots.txt (type = "sitemap" | "robots").
+  const handleUploadCustomFile = async (type, file) => {
+    if (!file) return;
+    const label = type === "sitemap" ? "sitemap.xml" : "robots.txt";
+    try {
+      setCustomFilesBusy(type);
+      const content = await file.text();
+      if (!content.trim()) {
+        setCustomFilesBusy("");
+        adminSwal.fire({ icon: "warning", title: "Empty file", text: `The selected ${label} file is empty.`, confirmButtonColor: "#ef4444" });
+        return;
+      }
+      const token = localStorage.getItem("aero_admin_token");
+      const res = await fetch("/api/admin/sitemap-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type, content }),
+      });
+      const data = await res.json();
+      setCustomFilesBusy("");
+      if (data.success) {
+        setCustomFiles((prev) => ({ ...prev, [type]: { active: true, content } }));
+        adminSwal.fire({
+          icon: "success",
+          title: "Uploaded!",
+          html: `Custom <code>${label}</code> is now live at <code>/${label}</code> and overrides the generated one.`,
+          confirmButtonColor: "var(--primary-color)",
+        });
+      } else {
+        throw new Error(data.message || "Upload failed.");
+      }
+    } catch (err) {
+      setCustomFilesBusy("");
+      adminSwal.fire({ icon: "error", title: "Upload Failed", text: err.message || "Something went wrong.", confirmButtonColor: "#ef4444" });
+    }
+  };
+
+  // Remove the custom file so the auto-generated one is served again.
+  const handleRemoveCustomFile = async (type) => {
+    const label = type === "sitemap" ? "sitemap.xml" : "robots.txt";
+    const confirm = await adminSwal.fire({
+      title: `Remove custom ${label}?`,
+      html: `The uploaded <code>${label}</code> will be deleted and the <b>auto-generated</b> version will be served again.`,
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "Yes, remove",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "#ef4444",
+    });
+    if (!confirm.isConfirmed) return;
+    try {
+      setCustomFilesBusy(type);
+      const token = localStorage.getItem("aero_admin_token");
+      const res = await fetch("/api/admin/sitemap-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type, clear: true }),
+      });
+      const data = await res.json();
+      setCustomFilesBusy("");
+      if (data.success) {
+        setCustomFiles((prev) => ({ ...prev, [type]: { active: false, content: "" } }));
+        adminSwal.fire({ icon: "success", title: "Removed", text: `The generated ${label} is now served.`, confirmButtonColor: "var(--primary-color)" });
+      } else {
+        throw new Error(data.message || "Remove failed.");
+      }
+    } catch (err) {
+      setCustomFilesBusy("");
+      adminSwal.fire({ icon: "error", title: "Failed", text: err.message || "Something went wrong.", confirmButtonColor: "#ef4444" });
+    }
+  };
+
+  const handleEmailDatabaseBackup = async () => {
+    const token = localStorage.getItem("aero_admin_token");
+    if (!token) return;
+
+    const confirm = await adminSwal.fire({
+      title: "Email Database Backup?",
+      text: "This will export all tables (contacts, blogs, applications, leads, courses, settings, etc.) and email the complete JSON backup snapshot to ALL active admin email addresses.",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "📦 Yes, Email Full Backup",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "var(--primary-color)",
+      background: "#111827",
+      color: "#fff"
+    });
+
+    if (!confirm.isConfirmed) return;
+
+    setBackupLoading(true);
+    adminSwal.fire({
+      title: "Exporting Database...",
+      text: "Fetching all database tables and sending backup emails to admins.",
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      }
+    });
+
+    try {
+      const res = await fetch("/api/admin/database-backup", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (data.success) {
+        adminSwal.fire({
+          icon: "success",
+          title: "Backup Emailed Successfully!",
+          html: `
+            <div style="text-align: left; font-size: 13px; color: #d1d5db; line-height: 1.6;">
+              <p><strong>Total Records:</strong> ${(Number(data.totalRecords) || 0).toLocaleString()}</p>
+              <p><strong>Backup File:</strong> <code>${data.fileName || "yaqeen-db-backup.json"}</code> (${data.fileSizeKB || "0"} KB)</p>
+              <p><strong>Delivered To:</strong> ${(data.recipients || []).join(", ")}</p>
+              <p style="margin-top: 10px; color: #10b981;">✓ All admin emails have received the full backup snapshot attachment.</p>
+            </div>
+          `,
+          confirmButtonColor: "var(--primary-color)",
+          background: "#111827",
+          color: "#fff"
+        });
+      } else {
+        throw new Error(data.message || "Failed to send database backup.");
+      }
+    } catch (err) {
+      console.error("Database backup failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Backup Failed",
+        text: err.message || "An unexpected error occurred while generating database backup.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  // Blog Editor section list actions
+  const handleAddSection = () => {
+    setBlogSections((prev) => [...prev, { title: "", content: "" }]);
+  };
+
+  const handleRemoveSection = (index) => {
+    setBlogSections((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleSectionChange = (index, field, value) => {
+    setBlogSections((prev) =>
+      prev.map((sec, idx) => (idx === index ? { ...sec, [field]: value } : sec))
+    );
+  };
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const fileName = `${Math.random().toString(36).substring(2, 15)}_${Date.now()}.${fileExt}`;
+      const filePath = `featured/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("blog-images")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from("blog-images")
+        .getPublicUrl(filePath);
+
+      setBlogForm((prev) => ({
+        ...prev,
+        featured_image: data.publicUrl
+      }));
+    } catch (err) {
+      console.error("Image upload failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Upload Failed",
+        text: err.message?.includes("bucket") 
+          ? "Please make sure you have created a public bucket named 'blog-images' in your Supabase Storage dashboard."
+          : err.message || "Failed to upload image.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Handle blog form changes
+  const handleBlogFormChange = (e) => {
+    const { name, value } = e.target;
+    setBlogForm((prev) => ({
+      ...prev,
+      [name]: value,
+      // Auto generate slug if slug was empty and we are typing title
+      slug: name === "title" && !editingBlogId ? value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") : prev.slug
+    }));
+  };
+
+  // Create or Update Blog
+  const handleSaveBlog = async (e) => {
+    e.preventDefault();
+    const isBodyEmpty = !blogForm.body || blogForm.body.trim() === "" || blogForm.body === "<p><br></p>";
+    if (!blogForm.title || !blogForm.slug || isBodyEmpty) {
+      adminSwal.fire({
+        icon: "warning",
+        title: "Missing Fields",
+        text: "Title, Slug, and Body text are required!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+      return;
+    }
+
+    setLoading(true);
+    const cleanedSections = blogSections.filter((sec) => sec.title.trim() !== "");
+
+    const payload = {
+      title: blogForm.title,
+      slug: blogForm.slug,
+      category: blogForm.category,
+      read_time: blogForm.read_time,
+      author: blogForm.author,
+      featured_image: blogForm.featured_image || null,
+      quote: blogForm.quote || null,
+      quote_source: blogForm.quote_source || null,
+      body: blogForm.body,
+      sections: cleanedSections,
+      second_quote: blogForm.second_quote || null,
+      second_quote_source: blogForm.second_quote_source || null,
+      seo_title: blogForm.seo_title || blogForm.title,
+      seo_description: htmlToText(blogForm.seo_description) || htmlToText(blogForm.body).slice(0, 150),
+      seo_keywords: blogForm.seo_keywords || ""
+    };
+
+    try {
+      if (editingBlogId) {
+        // Edit mode
+        const { error } = await supabase
+          .from("blogs")
+          .update(payload)
+          .eq("id", editingBlogId);
+        if (error) throw error;
+      } else {
+        // Create mode
+        const { error } = await supabase
+          .from("blogs")
+          .insert([payload]);
+        if (error) throw error;
+      }
+
+      // Reset Form
+      setIsEditingBlog(false);
+      setEditingBlogId(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setBlogForm({
+        title: "",
+        slug: "",
+        category: "General",
+        read_time: "5 min read",
+        author: "Admin Team",
+        featured_image: "",
+        quote: "",
+        quote_source: "",
+        body: "",
+        second_quote: "",
+        second_quote_source: "",
+        seo_title: "",
+        seo_description: "",
+        seo_keywords: ""
+      });
+      setBlogSections([{ title: "", content: "" }]);
+      fetchDashboardData();
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Error Saving",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Trigger Blog Create Form
+  const triggerCreateBlog = () => {
+    setEditingBlogId(null);
+    setBlogForm({
+      title: "",
+      slug: "",
+      category: "General",
+      read_time: "5 min read",
+      author: "Admin Team",
+      featured_image: "",
+      quote: "",
+      quote_source: "",
+      body: "",
+      second_quote: "",
+      second_quote_source: "",
+      seo_title: "",
+      seo_description: "",
+      seo_keywords: ""
+    });
+    setBlogSections([{ title: "", content: "" }]);
+    setIsEditingBlog(true);
+  };
+
+  // Trigger Blog Edit Form
+  const triggerEditBlog = (blogItem) => {
+    setEditingBlogId(blogItem.id);
+    setBlogForm({
+      title: blogItem.title || "",
+      slug: blogItem.slug || "",
+      category: blogItem.category || "General",
+      read_time: blogItem.read_time || "5 min read",
+      author: blogItem.author || "Admin Team",
+      featured_image: blogItem.featured_image || "",
+      quote: blogItem.quote || "",
+      quote_source: blogItem.quote_source || "",
+      body: blogItem.body || "",
+      second_quote: blogItem.second_quote || "",
+      second_quote_source: blogItem.second_quote_source || "",
+      seo_title: blogItem.seo_title || "",
+      seo_description: blogItem.seo_description || "",
+      seo_keywords: blogItem.seo_keywords || ""
+    });
+    setBlogSections(blogItem.sections && blogItem.sections.length > 0 ? blogItem.sections : [{ title: "", content: "" }]);
+    setIsEditingBlog(true);
+  };
+
+  // Delete Blog Post
+  const handleDeleteBlog = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "You won't be able to revert this!",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("blogs").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Publication has been deleted.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete Contact message
+  const handleDeleteContact = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this contact submission record?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("contacts").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Contact submission has been deleted.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete a teacher application record
+  const handleDeleteTeacherApp = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this teacher application record?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("teacher_applications").delete().eq("id", id);
+      if (error) throw error;
+      setSelectedTeacherApp(null);
+      fetchDashboardData();
+      adminSwal.fire({ icon: "success", title: "Deleted!", text: "Teacher application has been deleted.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      adminSwal.fire({ icon: "error", title: "Delete Failed", text: err.message, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete a student application record
+  const handleDeleteStudentApp = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this student registration record?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("student_applications").delete().eq("id", id);
+      if (error) throw error;
+      setSelectedStudentApp(null);
+      fetchDashboardData();
+      adminSwal.fire({ icon: "success", title: "Deleted!", text: "Student registration has been deleted.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      adminSwal.fire({ icon: "error", title: "Delete Failed", text: err.message, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- CAREER JOBS ACTIONS ---
+  const triggerCreateJob = () => {
+    setJobForm({ title: "", job_title: "", meta: "", badge: "Online", description: "", order_index: careerJobs.length + 1 });
+    setEditingJobId(null);
+    setIsEditingJob(true);
+  };
+
+  const triggerEditJob = (job) => {
+    setJobForm({
+      title: job.title || "", job_title: job.job_title || "", meta: job.meta || "",
+      badge: job.badge || "Online", description: job.description || "", order_index: job.order_index || 0
+    });
+    setEditingJobId(job.id);
+    setIsEditingJob(true);
+  };
+
+  const handleSaveJob = async (e) => {
+    e.preventDefault();
+    if (!jobForm.title.trim()) {
+      adminSwal.fire({ icon: "warning", title: "Missing title", text: "Please enter the job title.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = {
+        title: jobForm.title.trim(),
+        job_title: jobForm.job_title.trim(),
+        meta: jobForm.meta.trim(),
+        badge: jobForm.badge.trim() || "Online",
+        description: jobForm.description.trim(),
+        order_index: Number(jobForm.order_index) || 0
+      };
+      const { error } = editingJobId
+        ? await supabase.from("career_jobs").update(payload).eq("id", editingJobId)
+        : await supabase.from("career_jobs").insert([payload]);
+      if (error) throw error;
+      setIsEditingJob(false);
+      fetchDashboardData();
+      adminSwal.fire({ icon: "success", title: editingJobId ? "Job Updated" : "Job Added", text: "The Careers page has been updated.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      const msg = err.message && err.message.toLowerCase().includes("career_jobs")
+        ? "The career_jobs table is not set up yet. Please run the provided SQL in Supabase."
+        : err.message;
+      adminSwal.fire({ icon: "error", title: "Save Failed", text: msg, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteJob = async (id) => {
+    const result = await adminSwal.fire({ title: "Delete this job?", text: "It will be removed from the Careers page.", icon: "warning", showCancelButton: true, confirmButtonColor: "#ef4444", cancelButtonColor: "var(--card-border)", confirmButtonText: "Yes, delete", background: "#111827", color: "#fff" });
+    if (!result.isConfirmed) return;
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("career_jobs").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({ icon: "success", title: "Deleted!", text: "Job opening has been removed.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } catch (err) {
+      adminSwal.fire({ icon: "error", title: "Delete Failed", text: err.message, confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- TEACHERS ACTIONS ---
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const fileName = `teacher_${Date.now()}.${fileExt}`;
+      const filePath = `teachers/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("blog-images")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from("blog-images")
+        .getPublicUrl(filePath);
+
+      setTeacherForm((prev) => ({
+        ...prev,
+        avatar_url: data.publicUrl
+      }));
+    } catch (err) {
+      console.error("Avatar upload failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Upload Failed",
+        text: err.message || "Failed to upload avatar.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSaveTeacher = async (e) => {
+    e.preventDefault();
+    if (!teacherForm.name || !teacherForm.languages || !teacherForm.experience || !teacherForm.specialization) {
+      adminSwal.fire({
+        icon: "warning",
+        title: "Missing Fields",
+        text: "Name, Languages, Experience, and Specialization are required!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+      return;
+    }
+
+    setLoading(true);
+    const t = (v) => { const s = (v ?? "").toString().trim(); return s || null; };
+    const payload = {
+      name: teacherForm.name,
+      title: t(teacherForm.title),
+      avatar_url: t(teacherForm.avatar_url),
+      languages: teacherForm.languages,
+      experience: teacherForm.experience,
+      specialization: teacherForm.specialization,
+      education: t(teacherForm.education),
+      bio: t(teacherForm.bio),
+      order_index: parseInt(teacherForm.order_index) || 0,
+      // Detail-page fields
+      slug: t(teacherForm.slug) || slugifyAdmin(teacherForm.name),
+      gender: t(teacherForm.gender),
+      country: t(teacherForm.country),
+      headline: t(teacherForm.headline),
+      short_bio: t(teacherForm.short_bio),
+      long_bio: t(teacherForm.long_bio),
+      quote: t(teacherForm.quote),
+      education_title: t(teacherForm.education_title),
+      education_sub: t(teacherForm.education_sub),
+      approach_title: t(teacherForm.approach_title),
+      approach_desc: t(teacherForm.approach_desc),
+      academic_title: t(teacherForm.academic_title),
+      academic_desc: t(teacherForm.academic_desc),
+      // Per-teacher SEO
+      seo_title: t(teacherForm.seo_title),
+      seo_description: t(teacherForm.seo_description),
+      seo_keywords: t(teacherForm.seo_keywords),
+      // Per-teacher "About" + "Verified" blocks (JSONB)
+      about_block: teacherForm.about_block || null,
+      verified_block: teacherForm.verified_block || null
+    };
+
+    // Save helper — retries with fallback if specific columns haven't been added yet
+    const saveTeacher = async (data) => {
+      if (editingTeacherId) {
+        return supabase.from("teachers").update(data).eq("id", editingTeacherId);
+      }
+      return supabase.from("teachers").insert([data]);
+    };
+
+    try {
+      let { error } = await saveTeacher(payload);
+      if (error) {
+        // Fallback retry with only the base columns if the DB table is older
+        // (i.e. the detail/SEO migration hasn't been run yet).
+        const basicPayload = {
+          name: payload.name, title: payload.title, avatar_url: payload.avatar_url,
+          languages: payload.languages, experience: payload.experience,
+          specialization: payload.specialization, education: payload.education,
+          bio: payload.bio, order_index: payload.order_index
+        };
+        const retryRes = await saveTeacher(basicPayload);
+        if (retryRes.error) throw error;
+        adminSwal.fire({
+          icon: "warning",
+          title: "Saved (basic fields only)",
+          text: "Detail & SEO columns are missing in the database. Run supabase-teachers-details-seo.sql to enable them.",
+          confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff"
+        });
+      }
+
+      // Reset Form
+      setIsEditingTeacher(false);
+      setEditingTeacherId(null);
+      setTeacherForm(EMPTY_TEACHER_FORM);
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Saved!",
+        text: "Teacher profile saved successfully.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Error Saving",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const triggerCreateTeacher = () => {
+    setEditingTeacherId(null);
+    setTeacherForm(EMPTY_TEACHER_FORM);
+    setIsEditingTeacher(true);
+  };
+
+  const triggerEditTeacher = (teacher) => {
+    setEditingTeacherId(teacher.id);
+    setTeacherForm({
+      name: teacher.name || "",
+      title: teacher.title || "",
+      avatar_url: teacher.avatar_url || "",
+      languages: teacher.languages || "",
+      experience: teacher.experience || "",
+      specialization: teacher.specialization || "",
+      education: teacher.education || "",
+      bio: teacher.bio || "",
+      order_index: teacher.order_index || 0,
+      slug: teacher.slug || "",
+      gender: teacher.gender || "",
+      country: teacher.country || "",
+      headline: teacher.headline || "",
+      short_bio: teacher.short_bio || "",
+      long_bio: teacher.long_bio || "",
+      quote: teacher.quote || "",
+      education_title: teacher.education_title || "",
+      education_sub: teacher.education_sub || "",
+      approach_title: teacher.approach_title || "",
+      approach_desc: teacher.approach_desc || "",
+      academic_title: teacher.academic_title || "",
+      academic_desc: teacher.academic_desc || "",
+      seo_title: teacher.seo_title || "",
+      seo_description: teacher.seo_description || "",
+      seo_keywords: teacher.seo_keywords || "",
+      about_block: (teacher.about_block && typeof teacher.about_block === "object")
+        ? { ...EMPTY_TEACHER_FORM.about_block, ...teacher.about_block,
+            features: Array.isArray(teacher.about_block.features) && teacher.about_block.features.length ? teacher.about_block.features : EMPTY_TEACHER_FORM.about_block.features }
+        : EMPTY_TEACHER_FORM.about_block,
+      verified_block: (teacher.verified_block && typeof teacher.verified_block === "object")
+        ? { ...EMPTY_TEACHER_FORM.verified_block, ...teacher.verified_block,
+            cards: Array.isArray(teacher.verified_block.cards) && teacher.verified_block.cards.length ? teacher.verified_block.cards : EMPTY_TEACHER_FORM.verified_block.cards }
+        : EMPTY_TEACHER_FORM.verified_block
+    });
+    setIsEditingTeacher(true);
+  };
+
+  const handleDeleteTeacher = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this teacher profile?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("teachers").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Teacher profile has been deleted.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- TESTIMONIALS ACTIONS ---
+  const handleTestimonialAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const fileName = `testi_${Date.now()}.${fileExt}`;
+      const filePath = `testimonials/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("blog-images")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from("blog-images")
+        .getPublicUrl(filePath);
+
+      setTestimonialForm((prev) => ({
+        ...prev,
+        avatar_url: data.publicUrl
+      }));
+    } catch (err) {
+      console.error("Testimonial avatar upload failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Upload Failed",
+        text: err.message || "Failed to upload avatar.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSaveTestimonial = async (e) => {
+    e.preventDefault();
+    if (!testimonialForm.name || !testimonialForm.role || !testimonialForm.content) {
+      adminSwal.fire({
+        icon: "warning",
+        title: "Missing Fields",
+        text: "Name, Role, and Content are required!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+      return;
+    }
+
+    // Check if at least one page is targeted
+    const targets = testimonialForm.page_targets;
+    const hasTargets = targets.all || targets.home || targets.about || targets.courses || targets.pricing;
+    if (!hasTargets) {
+      adminSwal.fire({
+        icon: "warning",
+        title: "Target Pages Required",
+        text: "Please select at least one page or choose 'Show on All Pages'!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+      return;
+    }
+
+    setLoading(true);
+    
+    // Serialize page targets
+    let pageTargetStr = "all";
+    if (!targets.all) {
+      const activeTargets = [];
+      if (targets.home) activeTargets.push("home");
+      if (targets.about) activeTargets.push("about");
+      if (targets.courses) activeTargets.push("courses");
+      if (targets.pricing) activeTargets.push("pricing");
+      pageTargetStr = activeTargets.join(",");
+    }
+
+    const payload = {
+      name: testimonialForm.name,
+      role: testimonialForm.role,
+      content: testimonialForm.content,
+      avatar_url: testimonialForm.avatar_url || null,
+      page_target: pageTargetStr,
+      order_index: parseInt(testimonialForm.order_index) || 0
+    };
+
+    try {
+      if (editingTestimonialId) {
+        // Edit mode
+        const { error } = await supabase
+          .from("testimonials")
+          .update(payload)
+          .eq("id", editingTestimonialId);
+        if (error) throw error;
+      } else {
+        // Create mode
+        const { error } = await supabase
+          .from("testimonials")
+          .insert([payload]);
+        if (error) throw error;
+      }
+
+      setIsEditingTestimonial(false);
+      setEditingTestimonialId(null);
+      setTestimonialForm({
+        name: "",
+        role: "",
+        content: "",
+        avatar_url: "",
+        page_targets: {
+          all: true,
+          home: false,
+          about: false,
+          courses: false,
+          pricing: false
+        },
+        order_index: 0
+      });
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Saved!",
+        text: "Testimonial saved successfully.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Error Saving",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const triggerCreateTestimonial = () => {
+    setEditingTestimonialId(null);
+    setTestimonialForm({
+      name: "",
+      role: "",
+      content: "",
+      avatar_url: "",
+      page_targets: {
+        all: true,
+        home: false,
+        about: false,
+        courses: false,
+        pricing: false
+      },
+      order_index: 0
+    });
+    setIsEditingTestimonial(true);
+  };
+
+  const triggerEditTestimonial = (testi) => {
+    setEditingTestimonialId(testi.id);
+    
+    // Parse page targets string
+    const targets = {
+      all: false,
+      home: false,
+      about: false,
+      courses: false,
+      pricing: false
+    };
+    
+    if (testi.page_target === "all") {
+      targets.all = true;
+    } else if (testi.page_target) {
+      const parts = testi.page_target.split(",").map(p => p.trim().toLowerCase());
+      parts.forEach(p => {
+        if (p in targets) targets[p] = true;
+      });
+    } else {
+      targets.all = true; // Fallback
+    }
+
+    setTestimonialForm({
+      name: testi.name || "",
+      role: testi.role || "",
+      content: testi.content || "",
+      avatar_url: testi.avatar_url || "",
+      page_targets: targets,
+      order_index: testi.order_index || 0
+    });
+    setIsEditingTestimonial(true);
+  };
+
+  const handleDeleteTestimonial = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this testimonial?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("testimonials").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Testimonial has been deleted.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- COURSES ACTIONS ---
+  const handleCourseImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const fileName = `course_${Date.now()}.${fileExt}`;
+      const filePath = `courses/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("blog-images")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from("blog-images")
+        .getPublicUrl(filePath);
+
+      setCourseForm((prev) => ({
+        ...prev,
+        image_url: data.publicUrl
+      }));
+    } catch (err) {
+      console.error("Course image upload failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Upload Failed",
+        text: err.message || "Failed to upload course image.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSaveCourse = async (e) => {
+    e.preventDefault();
+    if (!courseForm.title) {
+      adminSwal.fire({
+        icon: "warning",
+        title: "Missing Fields",
+        text: "Course Title is required!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+      return;
+    }
+
+    setLoading(true);
+    const base = {
+      title: courseForm.title,
+      image_url: courseForm.image_url || null,
+      icon: courseForm.icon || "book",
+      order_index: parseInt(courseForm.order_index) || 0
+    };
+    // Short description + the "one per line / Title | Description" list fields
+    // are rendered/parsed as plain text on the site, so store them plain even
+    // though they are edited in the rich editor. The two true rich-text fields
+    // (description, content_details) keep their HTML.
+    const payload = {
+      ...base,
+      short_description: htmlToText(courseForm.short_description) || null,
+      description: courseForm.description || null,
+      level: courseForm.level || null,
+      class_duration: courseForm.class_duration || null,
+      course_duration: courseForm.course_duration || null,
+      mode: courseForm.mode || null,
+      age_group: courseForm.age_group || null,
+      learn_points: htmlToText(courseForm.learn_points) || null,
+      requirements: htmlToText(courseForm.requirements) || null,
+      who_for: htmlToText(courseForm.who_for) || null,
+      content_details: courseForm.content_details || null,
+      course_modules: htmlToText(courseForm.course_modules) || null,
+      faqs: htmlToText(courseForm.faqs) || null,
+      // Per-course SEO (plain text — goes into <title>/<meta> on the detail page)
+      seo_title: (courseForm.seo_title || "").trim() || null,
+      seo_description: (courseForm.seo_description || "").trim() || null,
+      seo_keywords: (courseForm.seo_keywords || "").trim() || null
+    };
+
+    // Save helper — retries with only the base columns if the detail columns
+    // haven't been added to the DB yet, so course management never breaks.
+    const saveCourse = async (data) => {
+      if (editingCourseId) {
+        return supabase.from("courses").update(data).eq("id", editingCourseId);
+      }
+      return supabase.from("courses").insert([data]);
+    };
+
+    try {
+      let { error } = await saveCourse(payload);
+      if (error && /column|schema cache|could not find/i.test(String(error.message || ""))) {
+        ({ error } = await saveCourse(base));
+        if (!error) {
+          adminSwal.fire({ icon: "info", title: "Saved (basic fields)", text: "Course saved. To store the detailed content & FAQ, please run the courses table SQL migration in Supabase.", confirmButtonColor: "var(--primary-color)", background: "#111827", color: "#fff" });
+        }
+      }
+      if (error) throw error;
+
+      setIsEditingCourse(false);
+      setEditingCourseId(null);
+      setCourseForm(EMPTY_COURSE_FORM);
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Saved!",
+        text: "Course saved successfully.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Error Saving",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const triggerCreateCourse = () => {
+    setEditingCourseId(null);
+    setCourseForm(EMPTY_COURSE_FORM);
+    setIsEditingCourse(true);
+  };
+
+  const triggerEditCourse = (course) => {
+    setEditingCourseId(course.id);
+    setCourseForm({
+      title: course.title || "",
+      image_url: course.image_url || "",
+      icon: course.icon || "book",
+      order_index: course.order_index || 0,
+      short_description: course.short_description || "",
+      description: course.description || "",
+      level: course.level || "",
+      class_duration: course.class_duration || "",
+      course_duration: course.course_duration || "",
+      mode: course.mode || "",
+      age_group: course.age_group || "",
+      learn_points: course.learn_points || "",
+      requirements: course.requirements || "",
+      who_for: course.who_for || "",
+      content_details: course.content_details || "",
+      course_modules: course.course_modules || "",
+      faqs: course.faqs || "",
+      seo_title: course.seo_title || "",
+      seo_description: course.seo_description || "",
+      seo_keywords: course.seo_keywords || ""
+    });
+    setIsEditingCourse(true);
+  };
+
+  const handleDeleteCourse = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this course?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("courses").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Course has been deleted.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- PRICING PLANS ACTIONS ---
+  const handleAddPlanFeature = () => {
+    if (!newFeatureText.trim()) return;
+    setPlanForm((prev) => ({
+      ...prev,
+      features: [...prev.features, { text: newFeatureText.trim(), included: newFeatureIncluded }]
+    }));
+    setNewFeatureText("");
+  };
+
+  const handleRemovePlanFeature = (indexToRemove) => {
+    setPlanForm((prev) => ({
+      ...prev,
+      features: prev.features.filter((_, idx) => idx !== indexToRemove)
+    }));
+  };
+
+  const handleTogglePlanFeatureIncluded = (idxToToggle) => {
+    setPlanForm((prev) => ({
+      ...prev,
+      features: prev.features.map((f, idx) => 
+        idx === idxToToggle ? { ...f, included: !f.included } : f
+      )
+    }));
+  };
+
+  const handleSavePlan = async (e) => {
+    e.preventDefault();
+    const effectiveUsdPrice = planForm.price_usd || planForm.price;
+    if (!planForm.name || !effectiveUsdPrice) {
+      adminSwal.fire({
+        icon: "warning",
+        title: "Missing Fields",
+        text: "Plan Name and USD Price ($) are required!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+      return;
+    }
+
+    setLoading(true);
+    const payload = {
+      name: planForm.name,
+      subtitle: planForm.subtitle || null,
+      price: effectiveUsdPrice,
+      price_usd: effectiveUsdPrice,
+      price_gbp: planForm.price_gbp || null,
+      price_aed: planForm.price_aed || null,
+      period: planForm.period || "/hour",
+      icon: planForm.icon || "plane",
+      badge: planForm.badge || null,
+      features: planForm.features,
+      order_index: parseInt(planForm.order_index) || 0
+    };
+
+    try {
+      if (editingPlanId) {
+        // Edit mode
+        const { error } = await supabase
+          .from("pricing_plans")
+          .update(payload)
+          .eq("id", editingPlanId);
+        if (error) throw error;
+      } else {
+        // Create mode
+        const { error } = await supabase
+          .from("pricing_plans")
+          .insert([payload]);
+        if (error) throw error;
+      }
+
+      setIsEditingPlan(false);
+      setEditingPlanId(null);
+      setPlanForm({
+        name: "",
+        subtitle: "",
+        price: "",
+        price_usd: "",
+        price_gbp: "",
+        price_aed: "",
+        period: "/hour",
+        icon: "plane",
+        badge: "",
+        features: [],
+        order_index: 0
+      });
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Saved!",
+        text: "Pricing plan saved successfully with multi-currency rates.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Error Saving",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const triggerCreatePlan = () => {
+    setEditingPlanId(null);
+    setPlanForm({
+      name: "",
+      subtitle: "",
+      price: "",
+      price_usd: "",
+      price_gbp: "",
+      price_aed: "",
+      period: "/hour",
+      icon: "plane",
+      badge: "",
+      features: [],
+      order_index: 0
+    });
+    setNewFeatureText("");
+    setIsEditingPlan(true);
+  };
+
+  const triggerEditPlan = (plan) => {
+    setEditingPlanId(plan.id);
+    const usdVal = plan.price_usd || plan.price || "";
+    setPlanForm({
+      name: plan.name || "",
+      subtitle: plan.subtitle || "",
+      price: usdVal,
+      price_usd: usdVal,
+      price_gbp: plan.price_gbp || "",
+      price_aed: plan.price_aed || "",
+      period: plan.period || "/hour",
+      icon: plan.icon || "plane",
+      badge: plan.badge || "",
+      features: plan.features || [],
+      order_index: plan.order_index || 0
+    });
+    setNewFeatureText("");
+    setIsEditingPlan(true);
+  };
+
+  const handleDeletePlan = async (id) => {
+    const result = await adminSwal.fire({
+      title: "Are you sure?",
+      text: "Delete this pricing plan?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete it!",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("pricing_plans").delete().eq("id", id);
+      if (error) throw error;
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Pricing plan has been deleted.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- NEWSLETTER SUBSCRIBERS ACTIONS ---
+  const handleDeleteSubscriber = async (id, email) => {
+    const result = await adminSwal.fire({
+      title: "Remove Subscriber?",
+      text: `Are you sure you want to remove ${email || "this subscriber"} from the newsletter list?`,
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      cancelButtonColor: "var(--card-border)",
+      confirmButtonText: "Yes, delete",
+      background: "#111827",
+      color: "#fff"
+    });
+    if (!result.isConfirmed) return;
+
+    setLoading(true);
+    try {
+      const token = localStorage.getItem("aero_admin_token");
+      const res = await fetch(`/api/newsletter?id=${encodeURIComponent(id || "")}&email=${encodeURIComponent(email || "")}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || "Failed to remove subscriber.");
+      
+      setNewsletterSubscribers((prev) => prev.filter((s) => s.id !== id && s.email !== email));
+      adminSwal.fire({
+        icon: "success",
+        title: "Deleted!",
+        text: "Subscriber has been removed from the mailing list.",
+        confirmButtonColor: "var(--primary-color)"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Delete Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopySubscriberEmails = () => {
+    if (!newsletterSubscribers || newsletterSubscribers.length === 0) {
+      adminSwal.fire({ icon: "info", title: "No emails", text: "No subscribers found to copy." });
+      return;
+    }
+    const emails = Array.from(new Set(newsletterSubscribers.map((s) => s.email).filter(Boolean))).join(", ");
+    navigator.clipboard.writeText(emails).then(() => {
+      adminSwal.fire({
+        icon: "success",
+        title: "Emails Copied!",
+        text: `${newsletterSubscribers.length} subscriber email(s) copied to your clipboard.`,
+        timer: 2000,
+        showConfirmButton: false
+      });
+    }).catch(() => {
+      adminSwal.fire({ icon: "error", title: "Copy Failed", text: "Could not access clipboard." });
+    });
+  };
+
+  const handleExportSubscribersCSV = () => {
+    if (!newsletterSubscribers || newsletterSubscribers.length === 0) {
+      adminSwal.fire({ icon: "info", title: "No subscribers", text: "No data available to export." });
+      return;
+    }
+    const headers = ["Email Address", "Source", "Location", "IP Address", "Status", "Subscribed Date"];
+    const rows = newsletterSubscribers.map((s) => [
+      s.email || "",
+      s.source || "Website",
+      [s.city, s.country].filter((v) => v && v !== "Unknown").join(", ") || s.country || "",
+      s.ip_address || "",
+      s.status || "subscribed",
+      s.created_at ? new Date(s.created_at).toLocaleString() : ""
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map((row) =>
+        row.map((val) => {
+          const stringVal = String(val).replace(/"/g, '""');
+          return `"${stringVal}"`;
+        }).join(",")
+      )
+    ].join("\r\n");
+
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Yaqeen_Newsletter_Subscribers_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleAddSubscriberManual = async () => {
+    const { value: email } = await adminSwal.fire({
+      title: "Add Subscriber Manually",
+      text: "Enter the email address of the subscriber:",
+      input: "email",
+      inputPlaceholder: "subscriber@example.com",
+      showCancelButton: true,
+      confirmButtonText: "Add Subscriber",
+      cancelButtonText: "Cancel",
+      inputValidator: (value) => {
+        if (!value || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+          return "Please enter a valid email address!";
+        }
+      }
+    });
+
+    if (!email) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/newsletter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), source: "Admin Manual" })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || "Failed to add subscriber.");
+      
+      fetchDashboardData();
+      adminSwal.fire({
+        icon: "success",
+        title: "Subscriber Added!",
+        text: `Successfully added ${email} to the newsletter list.`,
+        confirmButtonColor: "var(--primary-color)"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Failed to Add",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle favicon upload
+  const handleFaviconUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    try {
+      const fileExt = file.name.split(".").pop();
+      const fileName = `favicon_${Date.now()}.${fileExt}`;
+      const filePath = `favicons/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("blog-images")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data } = supabase.storage
+        .from("blog-images")
+        .getPublicUrl(filePath);
+
+      setSeoSettings((prev) => ({
+        ...prev,
+        favicon_url: data.publicUrl
+      }));
+      
+      adminSwal.fire({
+        icon: "success",
+        title: "Favicon Uploaded!",
+        text: "Make sure to click 'Save Global Configuration' below to save changes.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      console.error("Favicon upload failed:", err);
+      adminSwal.fire({
+        icon: "error",
+        title: "Upload Failed",
+        text: err.message || "Failed to upload favicon icon.",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Save SEO Settings
+  const handleSaveSEO = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from("seo_settings")
+        .upsert({
+          id: "global",
+          title: seoSettings.title,
+          description: seoSettings.description,
+          keywords: seoSettings.keywords,
+          favicon_url: seoSettings.favicon_url || null,
+          updated_at: new Date()
+        });
+      if (error) throw error;
+      adminSwal.fire({
+        icon: "success",
+        title: "Updated!",
+        text: "Global SEO settings updated successfully!",
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } catch (err) {
+      adminSwal.fire({
+        icon: "error",
+        title: "Update Failed",
+        text: err.message,
+        confirmButtonColor: "var(--primary-color)",
+        background: "#111827",
+        color: "#fff"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- RENDERS ---
+
+  const adminThemeStyle = {
+    minHeight: "100vh",
+    backgroundColor: "#fdfcf9",
+    color: "#2c251e",
+    fontFamily: "'Lora', Georgia, serif",
+    /* Custom Admin Theme variables override */
+    "--bg-color": "#fdfcf9",
+    "--fg-color": "#2c251e",
+    "--fg-muted": "#7c7267",
+    "--primary-color": "#8c5d31",
+    "--primary-glow": "rgba(140, 93, 49, 0.15)",
+    "--secondary-color": "#3c3022",
+    "--secondary-glow": "rgba(60, 48, 34, 0.15)",
+    "--card-bg": "rgba(253, 250, 243, 0.9)",
+    "--card-border": "#e3dbc9",
+    "--card-hover-border": "#8c5d31",
+    transition: "all 0.3s ease"
+  };
+
+  // Geo-Fencing Screen (Restricted to India only)
+  if (geoRestricted) {
+    return (
+      <div style={{ ...adminThemeStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: "24px" }}>
+        <div className="glass-panel" style={{ padding: "40px", width: "100%", maxWidth: "460px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", borderRadius: "20px", boxShadow: "0 10px 30px rgba(44, 37, 30, 0.08)" }}>
+          <div style={{ width: "64px", height: "64px", borderRadius: "50%", backgroundColor: "rgba(239, 68, 68, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "28px" }}>
+            🚫
+          </div>
+          <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#2c251e", margin: 0 }}>Access Restricted</h2>
+          <p style={{ color: "#7c7267", fontSize: "14px", lineHeight: "1.6", margin: 0 }}>
+            The Yaqeen Institute Admin Console is strictly geo-restricted to authorized regions (<strong>India 🇮🇳 only</strong>).
+          </p>
+          {detectedGeo.country && (
+            <div style={{ padding: "8px 16px", backgroundColor: "rgba(0,0,0,0.03)", borderRadius: "8px", fontSize: "12px", color: "#8c5d31", fontWeight: "600" }}>
+              Detected Region: {detectedGeo.country} {detectedGeo.ip ? `(${detectedGeo.ip})` : ""}
+            </div>
+          )}
+          <p style={{ fontSize: "12px", color: "#9ca3af", margin: "8px 0 0 0" }}>
+            If you are an authorized administrator, please ensure you access from an authorized Indian network connection.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Loading Screen (while checking local session token)
+  if (isVerifyingSession) {
+    return (
+      <div style={{ ...adminThemeStyle, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "20px" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px" }}>
+          {(adminLoaderLogo || logoUrl) && (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={adminLoaderLogo || logoUrl}
+              alt={logoText || "Yaqeen"}
+              style={{ height: "52px", width: "auto", maxWidth: "200px", objectFit: "contain", marginBottom: "4px" }}
+            />
+          )}
+          <div style={{
+            width: "40px",
+            height: "40px",
+            border: "3px solid rgba(140, 93, 49, 0.1)",
+            borderTopColor: "var(--primary-color)",
+            borderRadius: "50%"
+          }} className="spinner"></div>
+          <span style={{ fontSize: "14px", color: "var(--fg-muted)", fontWeight: "500" }}>Securing admin console connection...</span>
+        </div>
+        <style dangerouslySetInnerHTML={{ __html: `
+          @keyframes spin {
+            to { transform: rotate(360deg); }
+          }
+          .spinner {
+            animation: spin 1s linear infinite !important;
+          }
+        `}} />
+      </div>
+    );
+  }
+
+  // Auth Screen
+  if (!isAuthenticated) {
+    const loginInputStyle = {
+      padding: "12px 18px",
+      borderRadius: "9999px",
+      border: "1px solid var(--card-border)",
+      backgroundColor: "rgba(0, 0, 0, 0.02)",
+      color: "var(--fg-color)",
+      outline: "none",
+      fontSize: "15px",
+      textAlign: "center",
+      width: "100%"
+    };
+
+    return (
+      <div style={{ ...adminThemeStyle, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+        <div className="glass-panel" style={{ padding: "40px", width: "100%", maxWidth: "400px", display: "flex", flexDirection: "column", gap: "20px" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", marginBottom: "16px", minHeight: "44px" }}>
+              {(adminLoaderLogo || logoUrl) ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={adminLoaderLogo || logoUrl}
+                  alt={logoText || "Yaqeen"}
+                  style={{
+                    height: "40px",
+                    maxHeight: "44px",
+                    width: "auto",
+                    objectFit: "contain",
+                    borderRadius: "4px"
+                  }}
+                />
+              ) : (
+                <span style={{ 
+                  textTransform: "capitalize", 
+                  color: "#2c251e", 
+                  fontFamily: "'Playfair Display', serif", 
+                  fontWeight: "500", 
+                  fontSize: "24px", 
+                  display: "flex", 
+                  alignItems: "center", 
+                  gap: "8px" 
+                }}>
+                  <span className="logo-dot"></span>
+                  {logoText || "yaqeen"} Admin
+                </span>
+              )}
+            </div>
+            <p style={{ color: "var(--fg-muted)", fontSize: "14px" }}>
+              {!otpSent ? "Sign in to manage your website panel" : "Enter the verification code sent to email"}
+            </p>
+          </div>
+
+          {!otpSent ? (
+            <>
+              {/* Google SSO Button */}
+              <button
+                type="button"
+                onClick={triggerGoogleSignIn}
+                disabled={authLoading}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "12px",
+                  width: "100%",
+                  padding: "12px 20px",
+                  backgroundColor: "#ffffff",
+                  border: "1.5px solid #EADDC8",
+                  borderRadius: "9999px",
+                  color: "#2C251E",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  boxShadow: "0 2px 8px rgba(44, 37, 30, 0.04)",
+                  transition: "all 0.2s ease"
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.backgroundColor = "#FAF5EC";
+                  e.currentTarget.style.borderColor = "#C99B4D";
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.backgroundColor = "#ffffff";
+                  e.currentTarget.style.borderColor = "#EADDC8";
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 10.04 0 12s.45 3.82 1.25 5.42l4.03-3.15z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
+                  />
+                </svg>
+                <span>Continue with Google</span>
+              </button>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "4px 0" }}>
+                <div style={{ flex: 1, height: "1px", backgroundColor: "var(--card-border)", opacity: 0.8 }} />
+                <span style={{ fontSize: "11px", color: "var(--fg-muted)", textTransform: "uppercase", letterSpacing: "0.8px", fontWeight: "600" }}>or sign in with email</span>
+                <div style={{ flex: 1, height: "1px", backgroundColor: "var(--card-border)", opacity: 0.8 }} />
+              </div>
+
+              <form onSubmit={handleLoginSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label htmlFor="email" style={{ fontSize: "12px", fontWeight: "600", color: "var(--fg-muted)" }}>Admin Email</label>
+                  <input
+                    type="email"
+                    id="email"
+                    placeholder="admin@example.com"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    required
+                    disabled={authLoading}
+                    style={loginInputStyle}
+                  />
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label htmlFor="password" style={{ fontSize: "12px", fontWeight: "600", color: "var(--fg-muted)" }}>Password</label>
+                  <input
+                    type="password"
+                    id="password"
+                    placeholder="••••••••"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    required
+                    disabled={authLoading}
+                    style={loginInputStyle}
+                  />
+                </div>
+
+                <button type="submit" className="btn-primary" disabled={authLoading} style={{ justifyContent: "center", marginTop: "8px" }}>
+                  {authLoading ? "Authenticating..." : "Send Verification OTP"}
+                </button>
+              </form>
+            </>
+          ) : (
+            <form onSubmit={handleVerifyOtpSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label htmlFor="otp" style={{ fontSize: "12px", fontWeight: "600", color: "var(--fg-muted)", textAlign: "center" }}>One-Time Password (OTP)</label>
+                <input
+                  type="text"
+                  id="otp"
+                  placeholder="123456"
+                  maxLength={6}
+                  value={otpInput}
+                  onChange={(e) => setOtpInput(e.target.value)}
+                  required
+                  disabled={authLoading}
+                  style={{
+                    ...loginInputStyle,
+                    fontSize: "24px",
+                    letterSpacing: "8px",
+                    fontWeight: "500"
+                  }}
+                />
+              </div>
+
+              <button type="submit" className="btn-primary" disabled={authLoading} style={{ justifyContent: "center", marginTop: "8px" }}>
+                {authLoading ? "Verifying..." : "Verify & Unlock"}
+              </button>
+
+              <button 
+                type="button" 
+                onClick={handleCancelOtp} 
+                className="btn-secondary" 
+                style={{ 
+                  justifyContent: "center",
+                  color: "#2C251E",
+                  borderColor: "#EADDC8",
+                  background: "rgba(0, 0, 0, 0.03)"
+                }}
+              >
+                Go Back
+              </button>
+            </form>
+          )}
+
+          {gitInfo && (
+            <div style={{
+              marginTop: "4px",
+              paddingTop: "16px",
+              borderTop: "1px dashed rgba(44, 37, 30, 0.15)",
+              fontSize: "11px",
+              color: "var(--fg-muted)",
+              textAlign: "center",
+              lineHeight: "1.4"
+            }}>
+              <span>Last Uploaded to Git: </span>
+              <strong style={{ color: "#2C251E", display: "inline-block", marginTop: "2px" }}>{gitInfo}</strong>
+            </div>
+          )}
+
+        </div>
+      </div>
+    );
+  }
+
+  // Group leads (Free Trials, Student Registrations, Inquiries) by country
+  const getCountryStats = (type = geoFilter) => {
+    const stats = {};
+    
+    const countItem = (item, category) => {
+      const country = (item.country && item.country !== "Unknown") ? item.country.trim() : (item.location ? item.location.split(",").pop().trim() : "Unknown");
+      if (!stats[country]) {
+        stats[country] = { country, total: 0, trials: 0, students: 0, inquiries: 0 };
+      }
+      stats[country].total += 1;
+      if (category === "trials") stats[country].trials += 1;
+      if (category === "students") stats[country].students += 1;
+      if (category === "inquiries") stats[country].inquiries += 1;
+    };
+
+    freeTrials.forEach(item => countItem(item, "trials"));
+    studentApps.forEach(item => countItem(item, "students"));
+    inquiries.forEach(item => countItem(item, "inquiries"));
+
+    const sortKey = type === "all" ? "total" : type === "trials" ? "trials" : type === "students" ? "students" : "inquiries";
+    
+    return Object.values(stats)
+      .filter(item => item[sortKey] > 0)
+      .sort((a, b) => b[sortKey] - a[sortKey]);
+  };
+
+  // Group contacts by ISP provider
+  const getProviderStats = () => {
+    const stats = {};
+    contacts.forEach(c => {
+      const provider = c.provider || "Unknown";
+      stats[provider] = (stats[provider] || 0) + 1;
+    });
+    return Object.entries(stats)
+      .map(([provider, count]) => ({ provider, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+  };
+
+  const getCountryFlag = (country) => {
+    if (!country) return "🌐";
+    const clean = country.trim().toLowerCase();
+    const codeMap = {
+      "united arab emirates": "🇦🇪", "uae": "🇦🇪",
+      "united kingdom": "🇬🇧", "uk": "🇬🇧", "england": "🇬🇧", "scotland": "🇬🇧",
+      "united states": "🇺🇸", "usa": "🇺🇸", "us": "🇺🇸",
+      "canada": "🇨🇦", "ca": "🇨🇦",
+      "india": "🇮🇳", "in": "🇮🇳",
+      "pakistan": "🇵🇰", "pk": "🇵🇰",
+      "saudi arabia": "🇸🇦", "ksa": "🇸🇦",
+      "australia": "🇦🇺", "au": "🇦🇺",
+      "germany": "🇩🇪", "de": "🇩🇪",
+      "france": "🇫🇷", "fr": "🇫🇷",
+      "bangladesh": "🇧🇩", "bd": "🇧🇩",
+      "egypt": "🇪🇬", "eg": "🇪🇬",
+      "turkey": "🇹🇷", "türkiye": "🇹🇷", "tr": "🇹🇷",
+      "qatar": "🇶🇦", "qa": "🇶🇦",
+      "kuwait": "🇰🇼", "kw": "🇰🇼",
+      "oman": "🇴🇲", "om": "🇴🇲",
+      "bahrain": "🇧🇭", "bh": "🇧🇭",
+      "malaysia": "🇲🇾", "my": "🇲🇾",
+      "singapore": "🇸🇬", "sg": "🇸🇬",
+      "indonesia": "🇮🇩", "id": "🇮🇩",
+      "tunisia": "🇹🇳", "tn": "🇹🇳",
+      "morocco": "🇲🇦", "ma": "🇲🇦",
+      "algeria": "🇩🇿", "dz": "🇩🇿",
+      "romania": "🇷🇴", "ro": "🇷🇴",
+      "philippines": "🇵🇭", "ph": "🇵🇭",
+      "jordan": "🇯🇴", "jo": "🇯🇴",
+      "lebanon": "🇱🇧", "lb": "🇱🇧",
+      "south africa": "🇿🇦", "za": "🇿🇦",
+      "nigeria": "🇳🇬", "ng": "🇳🇬",
+      "netherlands": "🇳🇱", "nl": "🇳🇱",
+      "sweden": "🇸🇪", "se": "🇸🇪",
+      "norway": "🇳🇴", "no": "🇳🇴",
+      "new zealand": "🇳🇿", "nz": "🇳🇿",
+      "ireland": "🇮🇪", "ie": "🇮🇪",
+      "italy": "🇮🇹", "it": "🇮🇹",
+      "spain": "🇪🇸", "es": "🇪🇸"
+    };
+    return codeMap[clean] || "🌐";
+  };
+
+  return (
+    <div className="admin-shell" style={{ ...adminThemeStyle, display: "grid", gridTemplateColumns: "240px 1fr" }}>
+      <style dangerouslySetInnerHTML={{ __html: `
+        /* Fix secondary buttons styling in admin panel to be legible against cream background */
+        .btn-secondary {
+          color: var(--fg-color) !important;
+          border-color: var(--card-border) !important;
+          background: rgba(0, 0, 0, 0.02) !important;
+        }
+        .btn-secondary:hover {
+          background: rgba(0, 0, 0, 0.05) !important;
+          color: var(--primary-color) !important;
+          border-color: var(--primary-color) !important;
+        }
+
+        /* Custom scrollbar for admin nav */
+        .admin-nav::-webkit-scrollbar {
+          width: 5px;
+        }
+        .admin-nav::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .admin-nav::-webkit-scrollbar-thumb {
+          background: rgba(140, 93, 49, 0.2) !important;
+          border-radius: 9999px;
+        }
+        .admin-nav::-webkit-scrollbar-thumb:hover {
+          background: rgba(140, 93, 49, 0.35) !important;
+        }
+
+        /* ---------- Responsive: tablet & mobile ---------- */
+        @media (max-width: 1024px) {
+          .admin-overview-grid { grid-template-columns: repeat(4, 1fr) !important; }
+        }
+        @media (max-width: 900px) {
+          /* Sidebar becomes a top app-bar; content takes full width */
+          .admin-shell { grid-template-columns: 1fr !important; }
+          .admin-sidebar {
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 200 !important;
+            height: auto !important;
+            border-right: none !important;
+            border-bottom: 1px solid var(--card-border) !important;
+            padding: 12px 14px !important;
+            gap: 10px !important;
+          }
+          /* Show the hamburger toggle */
+          .admin-hamburger { display: flex !important; align-items: center; justify-content: center; }
+          /* Collapsible drawer: hidden until the hamburger opens it */
+          .admin-nav {
+            display: none !important;
+            gap: 4px !important;
+            max-height: 65vh;
+            overflow-y: auto;
+            padding-top: 6px !important;
+            border-top: 1px solid var(--card-border);
+          }
+          .admin-nav.open { display: flex !important; }
+          .admin-nav button {
+            width: 100% !important;
+            border-left: none !important;
+            border-radius: 8px !important;
+          }
+          /* Logout lives inside the drawer */
+          .admin-logout-btn { display: none !important; margin-top: 6px !important; }
+          .admin-nav.open ~ .admin-logout-btn { display: flex !important; }
+          .admin-main { padding: 22px 16px !important; max-height: none !important; }
+          .admin-header { flex-wrap: wrap !important; gap: 10px !important; }
+          .admin-header h2 { font-size: 22px !important; }
+          .admin-overview-grid { grid-template-columns: repeat(3, 1fr) !important; }
+        }
+        @media (max-width: 560px) {
+          .admin-main { padding: 16px 12px !important; }
+          .admin-overview-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          /* Collapse common multi-column form rows to a single column */
+          .admin-main div[style*="1fr 1fr"],
+          .admin-main div[style*="repeat(2, 1fr)"],
+          .admin-main div[style*="repeat(3, 1fr)"] { grid-template-columns: 1fr !important; }
+          .admin-header h2 { font-size: 20px !important; }
+        }
+      `}} />
+      {/* Sidebar navigation */}
+      <aside className="admin-sidebar" style={{
+        position: "sticky",
+        top: 0,
+        height: "100vh",
+        borderRight: "1px solid var(--card-border)", 
+        padding: "32px 16px", 
+        display: "flex", 
+        flexDirection: "column", 
+        gap: "32px", 
+        backgroundColor: "#f6ede0", // Warm light beige sidebar background
+        flexShrink: 0
+      }}>
+        <div className="admin-logo-row" style={{ paddingLeft: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: "40px" }}>
+          {profileForm.logo_url ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={profileForm.logo_url}
+              alt={profileForm.logo_text || "Yaqeen"}
+              style={{
+                height: "36px",
+                maxHeight: "36px",
+                width: "auto",
+                objectFit: "contain",
+                borderRadius: "4px"
+              }}
+            />
+          ) : (
+            <span style={{
+              textTransform: "capitalize",
+              color: "#2c251e",
+              fontFamily: "'Playfair Display', serif",
+              fontWeight: "500",
+              fontSize: "20px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px"
+            }}>
+              <span className="logo-dot"></span>
+              {profileForm.logo_text || "yaqeen"}
+            </span>
+          )}
+
+          {/* Hamburger — visible only on mobile via CSS */}
+          <button
+            className="admin-hamburger"
+            onClick={() => setMobileNavOpen((o) => !o)}
+            aria-label="Toggle menu"
+            aria-expanded={mobileNavOpen}
+            style={{
+              display: "none",
+              background: "none",
+              border: "1px solid var(--card-border)",
+              borderRadius: "10px",
+              padding: "8px",
+              cursor: "pointer",
+              color: "#2c251e",
+              lineHeight: 0
+            }}
+          >
+            {mobileNavOpen ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+            )}
+          </button>
+        </div>
+
+        <nav className={`admin-nav ${mobileNavOpen ? "open" : ""}`} style={{ display: "flex", flexDirection: "column", gap: "8px", listStyle: "none", flex: 1, overflowY: "auto", paddingRight: "4px" }}>
+          {ADMIN_TABS.filter((t) => !currentAdmin || hasTab(currentAdmin, t.key)).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => handleTabChange(t.key)}
+              style={{ ...sidebarBtnStyle, borderLeftColor: activeTab === t.key ? "var(--secondary-color)" : "transparent", backgroundColor: activeTab === t.key ? "rgba(255,255,255,0.02)" : "transparent" }}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+          {(!currentAdmin || canManageStaff(currentAdmin)) && (
+            <button
+              onClick={() => handleTabChange("staff")}
+              style={{ ...sidebarBtnStyle, borderLeftColor: activeTab === "staff" ? "var(--secondary-color)" : "transparent", backgroundColor: activeTab === "staff" ? "rgba(255,255,255,0.02)" : "transparent" }}
+            >
+              👥 Staff Accounts
+            </button>
+          )}
+          <button
+            onClick={() => handleTabChange("profile")}
+            style={{ ...sidebarBtnStyle, borderLeftColor: activeTab === "profile" ? "var(--secondary-color)" : "transparent", backgroundColor: activeTab === "profile" ? "rgba(255,255,255,0.02)" : "transparent" }}
+          >
+            👤 Profile Settings
+          </button>
+        </nav>
+
+        <button 
+          onClick={handleLogout} 
+          className="admin-logout-btn" 
+          style={{ 
+            marginTop: "auto", 
+            width: "100%", 
+            padding: "12px 16px",
+            fontSize: "14px",
+            fontWeight: "500",
+            borderRadius: "9999px",
+            border: "1px solid #e3dbc9",
+            backgroundColor: "#f0ebd8",
+            color: "#4a3e30",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+            boxShadow: "0 2px 6px rgba(140, 93, 49, 0.05)",
+            transition: "all 0.2s ease"
+          }}
+        >
+          <span>🚪</span> Logout Console
+        </button>
+      </aside>
+
+      {/* Main panel content */}
+      <main className="admin-main" style={{ padding: 0, overflowY: "auto", maxHeight: "100vh" }}>
+        {/* Sticky top bar */}
+        <AdminTopbar
+          adminEmail={profileForm.email}
+          counts={{
+            freeTrials: freeTrials.length,
+            inquiries: inquiries.length,
+            newsletter: newsletterSubscribers.length,
+            teacherApps: teacherApps.length,
+            studentApps: studentApps.length,
+          }}
+          onNavigate={handleTabChange}
+          onLogout={handleLogout}
+        />
+
+        <div className="admin-body-pad" style={{ padding: "24px 40px 40px 40px" }}>
+        {/* Header toolbar */}
+        <div className="admin-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "32px", borderBottom: "1px solid var(--card-border)", paddingBottom: "20px" }}>
+          <div>
+            <h2 style={{ fontSize: "28px", fontWeight: "500" }}>
+              {activeTab === "overview" && "System Overview"}
+              {activeTab === "landingPages" && "Landing Page Management"}
+              {activeTab === "newsletter" && "Newsletter Subscribers"}
+              {activeTab === "blogs" && (isEditingBlog ? (editingBlogId ? "Edit Blog Post" : "Write New Publication") : "Blog Publications")}
+              {activeTab === "contacts" && "Contact Query Logs"}
+              {activeTab === "liveChat" && "Live Chat"}
+              {activeTab === "footer" && "Header & Footer"}
+              {activeTab === "pages" && "Page Management"}
+              {activeTab === "freeTrials" && "Free Trial Bookings"}
+              {activeTab === "teacherApps" && "Teacher Applications"}
+              {activeTab === "studentApps" && "Student Registrations"}
+              {activeTab === "jobs" && (isEditingJob ? (editingJobId ? "Edit Job Opening" : "Add Job Opening") : "Career Job Openings")}
+              {activeTab === "seo" && "SEO Manager"}
+              {activeTab === "teachers" && (isEditingTeacher ? (editingTeacherId ? "Edit Teacher Profile" : "Register New Teacher") : "Teacher Profiles")}
+              {activeTab === "courses" && (isEditingCourse ? (editingCourseId ? "Edit Course Details" : "Add New Course") : "Islamic Courses")}
+              {activeTab === "testimonials" && (isEditingTestimonial ? (editingTestimonialId ? "Edit Testimonial" : "Add New Testimonial") : "Client Testimonials")}
+              {activeTab === "plans" && (isEditingPlan ? (editingPlanId ? "Edit Pricing Plan" : "Create Pricing Plan") : "Pricing Plans")}
+              {activeTab === "profile" && "Profile Credentials Settings"}
+              {activeTab === "staff" && "Staff Accounts"}
+            </h2>
+            <p style={{ color: "var(--fg-muted)", fontSize: "14px", marginTop: "4px" }}>
+              {activeTab === "overview" && "Real-time summary metrics across database logs."}
+              {activeTab === "landingPages" && "Create and customize multiple high-converting landing pages, URLs, SEO, and dynamic section content."}
+              {activeTab === "newsletter" && "View, search, export, and manage your newsletter subscribers and mailing list."}
+              {activeTab === "blogs" && "Author articles, categories, list points, and search engine fields."}
+              {activeTab === "contacts" && "Review customer forms, inquiries, and details."}
+              {activeTab === "liveChat" && "Chat live with website visitors. AI answers until you reply, then it pauses for that chat."}
+              {activeTab === "footer" && "Manage the website header menu and footer. Contact, social & logo are in Site Settings."}
+              {activeTab === "pages" && "Edit the text content of each website page. Pick a page on the left, edit, and save."}
+              {activeTab === "freeTrials" && "Review free trial class booking requests submitted by visitors."}
+              {activeTab === "teacherApps" && "Review teacher job applications with full details, CV and audio files."}
+              {activeTab === "studentApps" && "Review student registration form submissions with course, plan, and scheduling details."}
+              {activeTab === "jobs" && "Add, edit and remove the job openings shown on the Careers page."}
+              {activeTab === "seo" && "Per-page meta title, description, keywords & canonical slug, plus global defaults and sitemap."}
+              {activeTab === "teachers" && "Manage profiles, avatars, languages, experience, and topics of Islamic teachers."}
+              {activeTab === "courses" && "Manage online courses, thumbnails, icons, and display order."}
+              {activeTab === "testimonials" && "Manage customer testimonials and select target pages for display."}
+              {activeTab === "plans" && "Configure pricing plans, rates, ribbons, and itemized feature checklists."}
+              {activeTab === "profile" && "Manage your login email and password."}
+              {activeTab === "staff" && "Add team members, assign roles & section permissions, suspend or remove access."}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+            {activeTab === "studentApps" && (
+              <a 
+                href="/student-form" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="btn-primary"
+                style={{ 
+                  textDecoration: "none", 
+                  display: "inline-flex", 
+                  alignItems: "center", 
+                  justifyContent: "center",
+                  padding: "10px 20px",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  borderRadius: "8px",
+                  backgroundColor: "#4A5D3B",
+                  color: "#FFFFFF",
+                  border: "none",
+                  cursor: "pointer",
+                  boxShadow: "0 2px 8px rgba(74, 93, 59, 0.2)",
+                  transition: "background-color 0.2s ease"
+                }}
+              >
+                👁️ View Page
+              </a>
+            )}
+            {loading && <span style={{ color: "var(--secondary-color)", fontSize: "13px" }}>Syncing Database...</span>}
+          </div>
+        </div>
+
+        {/* TAB: LANDING PAGES */}
+        {activeTab === "landingPages" && <AdminLandingPages />}
+
+        {/* TAB: NEWSLETTER SUBSCRIBERS */}
+        {activeTab === "newsletter" && (
+          <div className="glass-panel" style={{ padding: "24px" }}>
+            <AdminDataTable
+              title="Newsletter Subscribers List"
+              subtitle={`Total ${newsletterSubscribers.length} subscriber(s) enrolled in the newsletter.`}
+              data={newsletterSubscribers}
+              keyField="id"
+              defaultPageSize={10}
+              searchPlaceholder="Search by email, location, source, IP address..."
+              searchKeys={["email", "city", "country", "source", "ip_address"]}
+              headerAction={
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    onClick={handleCopySubscriberEmails}
+                    className="btn-secondary"
+                    style={{ padding: "8px 14px", fontSize: "12.5px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  >
+                    📋 Copy All Emails
+                  </button>
+                  <button
+                    onClick={handleExportSubscribersCSV}
+                    className="btn-secondary"
+                    style={{ padding: "8px 14px", fontSize: "12.5px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  >
+                    📥 Export CSV
+                  </button>
+                  <button
+                    onClick={handleAddSubscriberManual}
+                    className="btn-primary"
+                    style={{ padding: "8px 16px", fontSize: "13px" }}
+                  >
+                    + Add Subscriber
+                  </button>
+                </div>
+              }
+              columns={[
+                {
+                  key: "email",
+                  label: "Email Address",
+                  render: (s) => (
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "16px" }}>✉️</span>
+                      <a href={`mailto:${s.email}`} style={{ color: "#2B1F14", fontWeight: "600", textDecoration: "none" }}>
+                        {s.email}
+                      </a>
+                    </div>
+                  )
+                },
+                {
+                  key: "country",
+                  label: "Location",
+                  render: (s) => (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12.5px" }}>
+                      <span style={{ fontSize: "15px" }}>{getCountryFlag(s.country)}</span>
+                      <span>{s.city && s.city !== "Unknown" ? `${s.city}, ` : ""}{s.country || "Unknown"}</span>
+                    </span>
+                  )
+                },
+                {
+                  key: "source",
+                  label: "Source",
+                  render: (s) => (
+                    <span style={{
+                      padding: "3px 9px",
+                      backgroundColor: "rgba(201, 155, 77, 0.12)",
+                      border: "1px solid rgba(201, 155, 77, 0.3)",
+                      borderRadius: "6px",
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      color: "#8C5D31"
+                    }}>
+                      {s.source || "Website"}
+                    </span>
+                  )
+                },
+                {
+                  key: "created_at",
+                  label: "Subscribed On",
+                  render: (s) => (
+                    <span style={{ color: "var(--fg-muted)", fontSize: "12px", whiteSpace: "nowrap" }}>
+                      {s.created_at ? new Date(s.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+                    </span>
+                  )
+                },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: () => (
+                    <span style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      padding: "3px 8px",
+                      backgroundColor: "rgba(22, 163, 74, 0.1)",
+                      border: "1px solid rgba(22, 163, 74, 0.25)",
+                      borderRadius: "99px",
+                      color: "#16a34a",
+                      fontSize: "11px",
+                      fontWeight: "700"
+                    }}>
+                      <span style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "#16a34a" }}></span>
+                      Subscribed
+                    </span>
+                  )
+                }
+              ]}
+              actions={(s) => (
+                <button
+                  onClick={() => handleDeleteSubscriber(s.id, s.email)}
+                  className="btn-secondary"
+                  style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}
+                >
+                  Delete
+                </button>
+              )}
+            />
+          </div>
+        )}
+
+        {/* TAB: LIVE CHAT */}
+        {activeTab === "liveChat" && <AdminChat />}
+
+        {/* TAB: FOOTER */}
+        {activeTab === "footer" && <AdminFooter />}
+        {activeTab === "pages" && <AdminPages />}
+        {activeTab === "staff" && <AdminStaff />}
+
+        {/* TAB 1: OVERVIEW */}
+        {activeTab === "overview" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
+            {/* Stats Cards Row */}
+            <div className="admin-overview-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: "14px" }}>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #0284c7" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Free Trials</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#0284c7" }}>{freeTrials.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #16a34a" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Registrations</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#16a34a" }}>{studentApps.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #d97706", cursor: "pointer" }} onClick={() => handleTabChange("newsletter")}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Newsletter</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#d97706" }}>{newsletterSubscribers.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid var(--accent-color)" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Inquiries</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "var(--accent-color)" }}>{inquiries.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid var(--secondary-color)" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Published Blogs</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "var(--secondary-color)" }}>{blogs.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #C99B4D" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Teachers</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#C99B4D" }}>{teachers.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #4A5D3B" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Courses</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#4A5D3B" }}>{courses.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #8c5d31" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Testimonials</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#8c5d31" }}>{testimonials.length}</div>
+              </div>
+              <div className="glass-panel" style={{ padding: "16px 14px", borderLeft: "3.5px solid #6366f1" }}>
+                <div style={{ color: "var(--fg-muted)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.4px" }}>Active Plans</div>
+                <div style={{ fontSize: "28px", fontWeight: "800", marginTop: "6px", color: "#6366f1" }}>{plans.length}</div>
+              </div>
+            </div>
+
+            {/* Analytics and Inquiries Container */}
+            <div style={{ display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: "24px" }}>
+              {/* Left Side: Recent Inquiries */}
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", margin: 0 }}>Recent Inquiries</h3>
+                  <button onClick={() => setActiveTab("contacts")} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                    View All &rarr;
+                  </button>
+                </div>
+
+                {contacts.length === 0 ? (
+                  <p style={{ color: "var(--fg-muted)", fontSize: "14px", textAlign: "center", padding: "40px 0" }}>No recent messages found.</p>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13.5px" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1.5px solid var(--card-border)", color: "var(--fg-muted)", fontSize: "12px", textTransform: "uppercase" }}>
+                          <th style={{ padding: "10px 12px" }}>Name</th>
+                          <th style={{ padding: "10px 12px" }}>Email</th>
+                          <th style={{ padding: "10px 12px" }}>Subject</th>
+                          <th style={{ padding: "10px 12px" }}>Date</th>
+                          <th style={{ padding: "10px 12px", textAlign: "right" }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {contacts.slice(0, 8).map((c) => (
+                          <tr key={c.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                            <td style={{ padding: "10px 12px", fontWeight: "600" }}>{c.name}</td>
+                            <td style={{ padding: "10px 12px" }}>
+                              <a href={`mailto:${c.email}`} style={{ color: "var(--secondary-color)", textDecoration: "none" }}>{c.email}</a>
+                            </td>
+                            <td style={{ padding: "10px 12px", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.subject}</td>
+                            <td style={{ padding: "10px 12px", color: "var(--fg-muted)", whiteSpace: "nowrap" }}>{new Date(c.created_at).toLocaleDateString()}</td>
+                            <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                              <button 
+                                onClick={() => setSelectedContact(c)} 
+                                className="btn-secondary" 
+                                style={{ padding: "3px 8px", fontSize: "11.5px" }}
+                              >
+                                View
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Side: Geolocation Analytics */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+                {/* Country Breakdown Panel */}
+                <div className="glass-panel" style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
+                    <div>
+                      <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#2B1F14", margin: 0, fontFamily: "var(--font-serif), Georgia, serif", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span style={{ display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", backgroundColor: "#16a34a" }} />
+                        Country Geolocation Analytics
+                      </h3>
+                      <p style={{ fontSize: "12px", color: "var(--fg-muted)", margin: "3px 0 0 0" }}>Country-wise breakdown of trials, registrations & inquiries.</p>
+                    </div>
+                  </div>
+
+                  {/* Filter Pills */}
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    {[
+                      { key: "all", label: "All Leads", count: freeTrials.length + studentApps.length + inquiries.length },
+                      { key: "trials", label: "Free Trials", count: freeTrials.length, color: "#0284c7" },
+                      { key: "students", label: "Registrations", count: studentApps.length, color: "#16a34a" },
+                      { key: "inquiries", label: "Inquiries", count: inquiries.length, color: "var(--accent-color)" },
+                    ].map((tab) => {
+                      const isActive = geoFilter === tab.key;
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          onClick={() => setGeoFilter(tab.key)}
+                          style={{
+                            padding: "4px 10px",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            borderRadius: "6px",
+                            border: isActive ? "1px solid var(--primary-color)" : "1px solid #e5dec9",
+                            backgroundColor: isActive ? "var(--primary-color)" : "#ffffff",
+                            color: isActive ? "#ffffff" : "#4a3e31",
+                            cursor: "pointer",
+                            transition: "all 0.15s ease"
+                          }}
+                        >
+                          {tab.label} ({tab.count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                  
+                  {(() => {
+                    const stats = getCountryStats(geoFilter);
+                    const totalForCategory = stats.reduce((acc, curr) => {
+                      const val = geoFilter === "all" ? curr.total : geoFilter === "trials" ? curr.trials : geoFilter === "students" ? curr.students : curr.inquiries;
+                      return acc + val;
+                    }, 0);
+
+                    if (stats.length === 0 || totalForCategory === 0) {
+                      return (
+                        <p style={{ color: "var(--fg-muted)", fontSize: "13px", textAlign: "center", padding: "20px 0" }}>
+                          No data logged yet for {geoFilter === "all" ? "this selection" : geoFilter}.
+                        </p>
+                      );
+                    }
+
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxHeight: "400px", overflowY: "auto", paddingRight: "4px" }}>
+                        {stats.map((item) => {
+                          const count = geoFilter === "all" ? item.total : geoFilter === "trials" ? item.trials : geoFilter === "students" ? item.students : item.inquiries;
+                          const percent = Math.round((count / (totalForCategory || 1)) * 100);
+
+                          return (
+                            <div key={item.country} style={{ fontSize: "13px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                                <span style={{ fontWeight: "600", color: "#2B1F14", display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span style={{ fontSize: "15px" }}>{getCountryFlag(item.country)}</span>
+                                  <span>{item.country}</span>
+                                </span>
+                                
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  {geoFilter === "all" && (
+                                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>
+                                      ({item.trials}T / {item.students}R / {item.inquiries}I)
+                                    </span>
+                                  )}
+                                  <strong style={{ color: "var(--primary-color)" }}>
+                                    {count} {count === 1 ? "user" : "users"} ({percent}%)
+                                  </strong>
+                                </div>
+                              </div>
+
+                              <div style={{ width: "100%", height: "6px", backgroundColor: "#f0ebe1", borderRadius: "3px", overflow: "hidden" }}>
+                                <div style={{
+                                  width: `${percent}%`,
+                                  height: "100%",
+                                  backgroundColor: geoFilter === "trials" ? "#0284c7" : geoFilter === "students" ? "#16a34a" : "var(--primary-color)",
+                                  borderRadius: "3px",
+                                  transition: "width 0.3s ease"
+                                }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: BLOG MANAGEMENT */}
+        {activeTab === "blogs" && (
+          <div>
+            {!isEditingBlog ? (
+              // Blogs List Screen
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <AdminDataTable
+                  title="Published Articles"
+                  subtitle="Manage all blog articles and publications across the website."
+                  data={blogs}
+                  keyField="id"
+                  defaultPageSize={10}
+                  searchPlaceholder="Search blogs by title, category, author, slug..."
+                  searchKeys={["title", "category", "author", "slug"]}
+                  headerAction={
+                    <button onClick={triggerCreateBlog} className="btn-primary" style={{ padding: "8px 16px", fontSize: "13px" }}>
+                      + New Blog Post
+                    </button>
+                  }
+                  columns={[
+                    {
+                      key: "title",
+                      label: "Title",
+                      render: (b) => <strong style={{ color: "#2B1F14" }}>{b.title}</strong>
+                    },
+                    {
+                      key: "category",
+                      label: "Category",
+                      render: (b) => <span style={{ padding: "3px 8px", background: "rgba(74, 93, 59, 0.08)", border: "1px solid rgba(74, 93, 59, 0.2)", borderRadius: "4px", fontSize: "11.5px", color: "#4A5D3B", fontWeight: "600" }}>{b.category}</span>
+                    },
+                    {
+                      key: "author",
+                      label: "Author",
+                      render: (b) => b.author || "—"
+                    },
+                    {
+                      key: "slug",
+                      label: "Slug",
+                      render: (b) => <span style={{ fontFamily: "monospace", color: "var(--fg-muted)", fontSize: "12.5px" }}>{b.slug}</span>
+                    },
+                    {
+                      key: "created_at",
+                      label: "Published",
+                      render: (b) => (b.created_at ? new Date(b.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—")
+                    }
+                  ]}
+                  actions={(b) => (
+                    <>
+                      <button onClick={() => triggerEditBlog(b)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>Edit</button>
+                      <button onClick={() => handleDeleteBlog(b.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>Delete</button>
+                    </>
+                  )}
+                />
+              </div>
+            ) : (
+              // Blog Write / Edit Form
+              <form onSubmit={handleSaveBlog} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Article Details</h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Article Title *</label>
+                      <input
+                        type="text"
+                        name="title"
+                        value={blogForm.title}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. The Beauty of Tadabbur: Reflecting on the Quran"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Slug (URL Part) *</label>
+                      <input
+                        type="text"
+                        name="slug"
+                        value={blogForm.slug}
+                        onChange={handleBlogFormChange}
+                        placeholder="beauty-of-tadabbur-reflecting-on-the-quran"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Category</label>
+                      <input
+                        type="text"
+                        name="category"
+                        value={blogForm.category}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. Quran & Tafsir"
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Read Time</label>
+                      <input
+                        type="text"
+                        name="read_time"
+                        value={blogForm.read_time}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. 5 min read"
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Author</label>
+                      <input
+                        type="text"
+                        name="author"
+                        value={blogForm.author}
+                        onChange={handleBlogFormChange}
+                        placeholder="Yaqeen Institute Team"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Featured Image URL</label>
+                      <input
+                        type="text"
+                        name="featured_image"
+                        value={blogForm.featured_image}
+                        onChange={handleBlogFormChange}
+                        placeholder="https://images.unsplash.com/..."
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Or Upload Local Image</label>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleImageUpload}
+                          disabled={uploading}
+                          style={{
+                            ...formInputStyle,
+                            padding: "8px 12px",
+                            flex: 1,
+                            fontSize: "13px"
+                          }}
+                        />
+                        {uploading && <span style={{ color: "var(--secondary-color)", fontSize: "12px" }}>Uploading...</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {blogForm.featured_image && (
+                    <div style={{ marginTop: "4px", border: "1px solid var(--card-border)", borderRadius: "8px", padding: "8px", width: "fit-content", display: "flex", gap: "12px", alignItems: "center", backgroundColor: "rgba(255,255,255,0.01)" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={blogForm.featured_image} alt="Preview" style={{ width: "80px", height: "50px", objectFit: "cover", borderRadius: "4px" }} />
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Image Preview</span>
+                        <button type="button" onClick={() => setBlogForm(prev => ({ ...prev, featured_image: "" }))} style={{ color: "#ef4444", border: "none", background: "none", fontSize: "11px", cursor: "pointer", textAlign: "left", padding: 0 }}>Remove Image</button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Article Body Content *</label>
+                    <div style={{ position: "relative" }} className="quill-editor-container">
+                      <div ref={quillRef} style={{ minHeight: "250px" }} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Structured Sections builder */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>
+                    <h3 style={{ fontSize: "18px", fontWeight: "600" }}>Bullet Sections (List Points)</h3>
+                    <button type="button" onClick={handleAddSection} className="btn-secondary" style={{ padding: "4px 12px", fontSize: "12px" }}>
+                      + Add List Item
+                    </button>
+                  </div>
+                  <p style={{ color: "var(--fg-muted)", fontSize: "12px" }}>These generate the circle-numbered points (like What is Tadabbur?, Why is it Important?, etc.) in the blog body.</p>
+                  
+                  {blogSections.map((sec, idx) => (
+                    <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 2fr auto", gap: "16px", alignItems: "start", borderBottom: "1px dashed rgba(255,255,255,0.03)", paddingBottom: "16px" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <input
+                          type="text"
+                          placeholder={`Item ${idx + 1} Title`}
+                          value={sec.title}
+                          onChange={(e) => handleSectionChange(idx, "title", e.target.value)}
+                          style={formInputStyle}
+                        />
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <RichTextEditor
+                          value={sec.content}
+                          onChange={(html) => handleSectionChange(idx, "content", html)}
+                          placeholder={`Explanatory text for list item ${idx + 1}`}
+                          minHeight="90px"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveSection(idx)}
+                        disabled={blogSections.length === 1}
+                        className="btn-secondary"
+                        style={{ padding: "8px 12px", color: "#ef4444", fontSize: "12px", alignSelf: "center" }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Quotes Panels */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Featured Quotes (Block Quotes)</h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Featured Quote 1 (Top Block)</label>
+                      <input
+                        type="text"
+                        name="quote"
+                        value={blogForm.quote}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. Do they not then reflect on the Quran?"
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Quote 1 Source</label>
+                      <input
+                        type="text"
+                        name="quote_source"
+                        value={blogForm.quote_source}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. Quran (47:24)"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Featured Quote 2 (Bottom Lantern Block)</label>
+                      <input
+                        type="text"
+                        name="second_quote"
+                        value={blogForm.second_quote}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. And We have certainly made the Quran easy for remembrance..."
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Quote 2 Source</label>
+                      <input
+                        type="text"
+                        name="second_quote_source"
+                        value={blogForm.second_quote_source}
+                        onChange={handleBlogFormChange}
+                        placeholder="e.g. Quran (54:17)"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* SEO Panel */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>SEO Search Meta</h3>
+                  
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>SEO Header Title</label>
+                    <input
+                      type="text"
+                      name="seo_title"
+                      value={blogForm.seo_title}
+                      onChange={handleBlogFormChange}
+                      placeholder="Custom SEO Title (uses Blog Title if empty)"
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>SEO Description</label>
+                    <RichTextEditor
+                      value={blogForm.seo_description}
+                      onChange={(html) => setBlogForm((prev) => ({ ...prev, seo_description: html }))}
+                      placeholder="Write brief crawler summary..."
+                      minHeight="90px"
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>SEO Keywords</label>
+                    <input
+                      type="text"
+                      name="seo_keywords"
+                      value={blogForm.seo_keywords}
+                      onChange={handleBlogFormChange}
+                      placeholder="Tadabbur, Quran, reflection, Yaqeen"
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+
+                {/* Action Form buttons */}
+                <div style={{ display: "flex", gap: "16px", justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => { setIsEditingBlog(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="btn-secondary" style={{ padding: "12px 24px" }}>
+                    Cancel & Return
+                  </button>
+                  <button type="submit" className="btn-primary" style={{ padding: "12px 32px" }}>
+                    {editingBlogId ? "Save Article" : "Publish Article"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: CONTACT INBOX */}
+        {activeTab === "contacts" && (
+          <div className="glass-panel" style={{ padding: "24px" }}>
+            <AdminDataTable
+              title="Contact Messages Inbox"
+              subtitle="General inquiries received from website visitors."
+              data={inquiries}
+              keyField="id"
+              defaultPageSize={10}
+              searchPlaceholder="Search by name, email, subject..."
+              searchKeys={["name", "email", "subject", "message"]}
+              headerAction={
+                inquiries.length > 0 && (
+                  <button 
+                    onClick={() => exportContactsToExcel(inquiries, `Contact_Messages_${new Date().toISOString().slice(0,10)}`)}
+                    className="btn-primary" 
+                    style={{ 
+                      padding: "8px 16px", 
+                      fontSize: "13px", 
+                      display: "inline-flex", 
+                      alignItems: "center", 
+                      gap: "6px" 
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Export to Excel
+                  </button>
+                )
+              }
+              columns={[
+                {
+                  key: "name",
+                  label: "Name",
+                  render: (msg) => <strong style={{ color: "#2B1F14" }}>{msg.name}</strong>
+                },
+                {
+                  key: "email",
+                  label: "Email",
+                  render: (msg) => (
+                    <a href={`mailto:${msg.email}`} style={{ color: "var(--secondary-color)", textDecoration: "none", fontWeight: "500" }}>
+                      {msg.email}
+                    </a>
+                  )
+                },
+                {
+                  key: "subject",
+                  label: "Subject",
+                  render: (msg) => msg.subject || "—"
+                },
+                {
+                  key: "created_at",
+                  label: "Date",
+                  render: (msg) => new Date(msg.created_at).toLocaleString()
+                }
+              ]}
+              actions={(msg) => (
+                <>
+                  <button onClick={() => setSelectedContact(msg)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                    View Detail
+                  </button>
+                  <button onClick={() => handleDeleteContact(msg.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                    Delete
+                  </button>
+                </>
+              )}
+            />
+          </div>
+        )}
+
+        {activeTab === "freeTrials" && (
+          <div className="glass-panel" style={{ padding: "24px" }}>
+            <AdminDataTable
+              title="Free Trial Class Bookings"
+              subtitle="Review and manage free trial class booking requests submitted by visitors."
+              data={freeTrials}
+              keyField="id"
+              defaultPageSize={10}
+              searchPlaceholder="Search by name, email, course..."
+              searchKeys={["name", "email", "subject", "message", "phone"]}
+              headerAction={
+                freeTrials.length > 0 && (
+                  <button 
+                    onClick={() => exportToExcel(freeTrials, `Free_Trial_Bookings_${new Date().toISOString().slice(0,10)}`)}
+                    className="btn-primary" 
+                    style={{ 
+                      padding: "8px 16px", 
+                      fontSize: "13px", 
+                      display: "inline-flex", 
+                      alignItems: "center", 
+                      gap: "6px" 
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Export to Excel
+                  </button>
+                )
+              }
+              columns={[
+                {
+                  key: "name",
+                  label: "Name",
+                  render: (booking) => <strong style={{ color: "#2B1F14" }}>{booking.name}</strong>
+                },
+                {
+                  key: "email",
+                  label: "Email",
+                  render: (booking) => (
+                    <a href={`mailto:${booking.email}`} style={{ color: "var(--secondary-color)", textDecoration: "none", fontWeight: "500" }}>
+                      {booking.email}
+                    </a>
+                  )
+                },
+                {
+                  key: "course",
+                  label: "Interested In",
+                  render: (booking) => {
+                    const parts = (booking.subject || "").split("—");
+                    return parts.length > 1 ? parts[1].trim() : (booking.subject || "General");
+                  }
+                },
+                {
+                  key: "created_at",
+                  label: "Booked On",
+                  render: (booking) => new Date(booking.created_at).toLocaleString()
+                }
+              ]}
+              actions={(booking) => (
+                <>
+                  <button onClick={() => setSelectedContact(booking)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                    View Detail
+                  </button>
+                  <button onClick={() => handleDeleteContact(booking.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                    Delete
+                  </button>
+                </>
+              )}
+            />
+          </div>
+        )}
+
+        {activeTab === "teacherApps" && (
+          <div className="glass-panel" style={{ padding: "24px" }}>
+            <AdminDataTable
+              title="Teacher Job Applications"
+              subtitle="Review and manage teacher employment applications."
+              data={teacherApps}
+              keyField="id"
+              defaultPageSize={10}
+              searchPlaceholder="Search by teacher name, email, role..."
+              searchKeys={["first_name", "last_name", "email", "applying_for"]}
+              headerAction={
+                teacherApps.length > 0 && (
+                  <button 
+                    onClick={() => exportTeachersToExcel(teacherApps, `Teacher_Applications_${new Date().toISOString().slice(0,10)}`)}
+                    className="btn-primary" 
+                    style={{ 
+                      padding: "8px 16px", 
+                      fontSize: "13px", 
+                      display: "inline-flex", 
+                      alignItems: "center", 
+                      gap: "6px" 
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Export to Excel
+                  </button>
+                )
+              }
+              columns={[
+                {
+                  key: "name",
+                  label: "Name",
+                  render: (app) => <strong style={{ color: "#2B1F14" }}>{`${app.first_name || ""} ${app.last_name || ""}`.trim() || "—"}</strong>
+                },
+                {
+                  key: "email",
+                  label: "Email",
+                  render: (app) => (
+                    <a href={`mailto:${app.email}`} style={{ color: "var(--secondary-color)", textDecoration: "none", fontWeight: "500" }}>
+                      {app.email}
+                    </a>
+                  )
+                },
+                {
+                  key: "applying_for",
+                  label: "Applying For",
+                  render: (app) => app.applying_for || "—"
+                },
+                {
+                  key: "created_at",
+                  label: "Applied On",
+                  render: (app) => new Date(app.created_at).toLocaleString()
+                }
+              ]}
+              actions={(app) => (
+                <>
+                  <button onClick={() => setSelectedTeacherApp(app)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                    View Detail
+                  </button>
+                  <button onClick={() => handleDeleteTeacherApp(app.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                    Delete
+                  </button>
+                </>
+              )}
+            />
+          </div>
+        )}
+
+        {activeTab === "studentApps" && (
+          <div className="glass-panel" style={{ padding: "24px" }}>
+            <AdminDataTable
+              title="Student Registrations"
+              subtitle="All registered student applications with selected courses and pricing plans."
+              data={studentApps}
+              keyField="id"
+              defaultPageSize={10}
+              searchPlaceholder="Search by student name, email, course..."
+              searchKeys={["first_name", "last_name", "email", "course", "pricing_plan", "country"]}
+              headerAction={
+                studentApps.length > 0 && (
+                  <button 
+                    onClick={() => exportStudentsToExcel(studentApps, `Student_Registrations_${new Date().toISOString().slice(0,10)}`)}
+                    className="btn-primary" 
+                    style={{ 
+                      padding: "8px 16px", 
+                      fontSize: "13px", 
+                      display: "inline-flex", 
+                      alignItems: "center", 
+                      gap: "6px" 
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Export to Excel
+                  </button>
+                )
+              }
+              columns={[
+                {
+                  key: "name",
+                  label: "Name",
+                  render: (app) => <strong style={{ color: "#2B1F14" }}>{`${app.first_name || ""} ${app.last_name || ""}`.trim() || "—"}</strong>
+                },
+                {
+                  key: "email",
+                  label: "Email",
+                  render: (app) => (
+                    <a href={`mailto:${app.email}`} style={{ color: "var(--secondary-color)", textDecoration: "none", fontWeight: "500" }}>
+                      {app.email}
+                    </a>
+                  )
+                },
+                {
+                  key: "course",
+                  label: "Course",
+                  render: (app) => app.course || "—"
+                },
+                {
+                  key: "pricing_plan",
+                  label: "Plan",
+                  render: (app) => app.pricing_plan || "—"
+                },
+                {
+                  key: "monthly_price",
+                  label: "Price/Month",
+                  render: (app) => {
+                    const sym = app.currency === "AED" ? "AED " : app.currency === "GBP" ? "£" : "$";
+                    return `${sym}${app.monthly_price || "0"}`;
+                  }
+                },
+                {
+                  key: "created_at",
+                  label: "Applied On",
+                  render: (app) => new Date(app.created_at).toLocaleString()
+                }
+              ]}
+              actions={(app) => (
+                <>
+                  <button onClick={() => setSelectedStudentApp(app)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                    View Detail
+                  </button>
+                  <button onClick={() => handleDeleteStudentApp(app.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                    Delete
+                  </button>
+                </>
+              )}
+            />
+          </div>
+        )}
+
+        {/* Student Application Detail Modal */}
+        {selectedStudentApp && (
+          <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", backgroundColor: "rgba(0, 0, 0, 0.4)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: "20px", boxSizing: "border-box" }}>
+            <div className="glass-panel" style={{ width: "100%", maxWidth: "720px", backgroundColor: "#FFFDF9", border: "1px solid #EADDC8", borderRadius: "20px", boxShadow: "0 20px 50px rgba(44, 37, 30, 0.15)", display: "flex", flexDirection: "column", maxHeight: "90vh", overflow: "hidden" }}>
+              <div style={{ padding: "20px 24px", borderBottom: "1px solid var(--card-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "500", color: "#2B1F14", margin: 0, fontFamily: "var(--font-serif), Georgia, serif" }}>
+                  {`${selectedStudentApp.first_name || ""} ${selectedStudentApp.last_name || ""}`.trim()} — Student Details
+                </h3>
+                <button onClick={() => setSelectedStudentApp(null)} style={{ background: "none", border: "none", fontSize: "24px", color: "var(--fg-muted)", cursor: "pointer", padding: 0, lineHeight: 1 }}>&times;</button>
+              </div>
+
+              <div style={{ padding: "24px", overflowY: "auto", textAlign: "left" }}>
+                {(() => {
+                  const a = selectedStudentApp;
+                  const sym = a.currency === "AED" ? "AED " : a.currency === "GBP" ? "£" : "$";
+                  const rows = [
+                    ["Gender", a.gender], ["Email", a.email], ["Mobile", `${a.dial_code || ""} ${a.mobile || ""}`.trim()],
+                    ["Country", a.country], ["Currency", a.currency || "USD"], ["Age Group", a.age_group],
+                    ["Course", a.course], ["Hours / Week", a.hours_per_week],
+                    ["Pricing Plan", a.pricing_plan], ["Estimated Price/Month", `${sym}${a.monthly_price || "0"}`],
+                    ["Preferred Days", a.preferred_days], ["Preferred Start Date", a.preferred_date],
+                    ["Preferred Daily Time", a.preferred_time], ["Applied On", new Date(a.created_at).toLocaleString()]
+                  ];
+                  return (
+                    <>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px 18px" }}>
+                        {rows.filter(([, v]) => v).map(([label, v]) => (
+                          <div key={label}>
+                            <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>{label}</span>
+                            <div style={{ fontSize: "14px", fontWeight: "600", color: "#2B1F14", marginTop: "3px", wordBreak: "break-word" }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "22px" }}>
+                        <button onClick={() => handleDeleteStudentApp(a.id)} className="btn-secondary" style={{ padding: "8px 16px", fontSize: "13px", color: "#ef4444" }}>Delete Registration</button>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Teacher Application Detail Modal */}
+        {selectedTeacherApp && (
+          <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", backgroundColor: "rgba(0, 0, 0, 0.4)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: "20px", boxSizing: "border-box" }}>
+            <div className="glass-panel" style={{ width: "100%", maxWidth: "720px", backgroundColor: "#FFFDF9", border: "1px solid #EADDC8", borderRadius: "20px", boxShadow: "0 20px 50px rgba(44, 37, 30, 0.15)", display: "flex", flexDirection: "column", maxHeight: "90vh", overflow: "hidden" }}>
+              <div style={{ padding: "20px 24px", borderBottom: "1px solid var(--card-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "500", color: "#2B1F14", margin: 0, fontFamily: "var(--font-serif), Georgia, serif" }}>
+                  {`${selectedTeacherApp.first_name || ""} ${selectedTeacherApp.last_name || ""}`.trim()} — Application
+                </h3>
+                <button onClick={() => setSelectedTeacherApp(null)} style={{ background: "none", border: "none", fontSize: "24px", color: "var(--fg-muted)", cursor: "pointer", padding: 0, lineHeight: 1 }}>&times;</button>
+              </div>
+
+              <div style={{ padding: "24px", overflowY: "auto", textAlign: "left" }}>
+                {(() => {
+                  const a = selectedTeacherApp;
+                  const rows = [
+                    ["Gender", a.gender], ["Email", a.email], ["Mobile", `${a.dial_code || ""} ${a.mobile || ""}`.trim()],
+                    ["Country", a.country], ["Date of Birth", a.date_of_birth], ["Nationality", a.nationality],
+                    ["Occupation", a.occupation], ["Marital Status", a.marital_status], ["Facebook", a.facebook],
+                    ["Education", a.education], ["Years of Experience", a.years_experience],
+                    ["Mother Language", a.mother_language], ["Other Language", a.other_language],
+                    ["Applying For", a.applying_for], ["Has Ijazah", a.has_ijazah],
+                    ["Teach Tajweed in English", a.teach_tajweed_english], ["Has Children", a.has_children],
+                    ["Preferred Interview Time", a.preferred_interview_time], ["Expected Salary", a.expected_salary],
+                    ["Hours / Week", a.hours_per_week], ["Employment Type", a.employment_type],
+                    ["How Found Us", a.how_found], ["Applied On", new Date(a.created_at).toLocaleString()]
+                  ];
+                  const files = [
+                    ["Profile Image", a.profile_image_url], ["CV", a.cv_url],
+                    ["Reading Audio", a.reading_audio_url], ["Recitation Audio", a.recitation_audio_url]
+                  ].filter(([, url]) => url);
+                  return (
+                    <>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px 18px" }}>
+                        {rows.filter(([, v]) => v).map(([label, v]) => (
+                          <div key={label}>
+                            <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>{label}</span>
+                            <div style={{ fontSize: "14px", fontWeight: "600", color: "#2B1F14", marginTop: "3px", wordBreak: "break-word" }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {a.about_me && (
+                        <div style={{ borderTop: "1px solid var(--card-border)", marginTop: "18px", paddingTop: "14px" }}>
+                          <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>About Me</span>
+                          <p style={{ fontSize: "14px", color: "#4A3B2C", marginTop: "6px", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{a.about_me}</p>
+                        </div>
+                      )}
+                      {a.ideal_candidate && (
+                        <div style={{ borderTop: "1px solid var(--card-border)", marginTop: "14px", paddingTop: "14px" }}>
+                          <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>Ideal Candidate</span>
+                          <p style={{ fontSize: "14px", color: "#4A3B2C", marginTop: "6px", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{a.ideal_candidate}</p>
+                        </div>
+                      )}
+
+                      {files.length > 0 && (
+                        <div style={{ borderTop: "1px solid var(--card-border)", marginTop: "14px", paddingTop: "16px", display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                          {files.map(([label, url]) => (
+                            <a key={label} href={url} target="_blank" rel="noopener noreferrer" className="btn-secondary" style={{ padding: "8px 14px", fontSize: "13px", textDecoration: "none", borderRadius: "8px" }}>
+                              ⬇ {label}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "22px" }}>
+                        <button onClick={() => handleDeleteTeacherApp(a.id)} className="btn-secondary" style={{ padding: "8px 16px", fontSize: "13px", color: "#ef4444" }}>Delete Application</button>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "jobs" && (
+          <div>
+            {!isEditingJob ? (
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <AdminDataTable
+                  title="Job Openings"
+                  subtitle="Manage open positions and career opportunities for teachers and staff."
+                  data={careerJobs}
+                  keyField="id"
+                  defaultPageSize={10}
+                  searchPlaceholder="Search jobs by title, category, meta..."
+                  searchKeys={["title", "job_title", "meta", "badge", "description"]}
+                  headerAction={
+                    <button onClick={triggerCreateJob} className="btn-primary" style={{ padding: "8px 16px", fontSize: "13px" }}>
+                      + Add Job
+                    </button>
+                  }
+                  columns={[
+                    {
+                      key: "title",
+                      label: "Position Title",
+                      render: (job) => <strong style={{ color: "#2B1F14" }}>{job.title}</strong>
+                    },
+                    {
+                      key: "job_title",
+                      label: "Job Category",
+                      render: (job) => job.job_title || "—"
+                    },
+                    {
+                      key: "badge",
+                      label: "Badge",
+                      render: (job) => (
+                        <span style={{ padding: "3px 8px", background: "rgba(74, 93, 59, 0.08)", border: "1px solid rgba(74, 93, 59, 0.2)", borderRadius: "4px", fontSize: "11px", color: "#4A5D3B", fontWeight: "600" }}>
+                          {job.badge || "Online"}
+                        </span>
+                      )
+                    },
+                    {
+                      key: "order_index",
+                      label: "Order",
+                      align: "center",
+                      width: "70px",
+                      render: (job) => job.order_index ?? 0
+                    }
+                  ]}
+                  actions={(job) => (
+                    <>
+                      <button onClick={() => triggerEditJob(job)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                        Edit
+                      </button>
+                      <button onClick={() => handleDeleteJob(job.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                />
+              </div>
+            ) : (
+              <form onSubmit={handleSaveJob} className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Title *</label>
+                    <input value={jobForm.title} onChange={(e) => setJobForm((p) => ({ ...p, title: e.target.value }))} placeholder="e.g. Quran Teacher — Female" style={formInputStyle} />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Job Title</label>
+                    <input value={jobForm.job_title} onChange={(e) => setJobForm((p) => ({ ...p, job_title: e.target.value }))} placeholder="e.g. Quran Study with Tajweed" style={formInputStyle} />
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 100px", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Meta (details line)</label>
+                    <input value={jobForm.meta} onChange={(e) => setJobForm((p) => ({ ...p, meta: e.target.value }))} placeholder="Permanent | 2 Years Exp. | Bilingual" style={formInputStyle} />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Badge</label>
+                    <input value={jobForm.badge} onChange={(e) => setJobForm((p) => ({ ...p, badge: e.target.value }))} placeholder="Online" style={formInputStyle} />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Order</label>
+                    <input type="number" value={jobForm.order_index} onChange={(e) => setJobForm((p) => ({ ...p, order_index: e.target.value }))} style={formInputStyle} />
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label style={formLabelStyle}>Description</label>
+                  <RichTextEditor value={jobForm.description} onChange={(html) => setJobForm((p) => ({ ...p, description: html }))} placeholder="Short description of the role and requirements…" minHeight="120px" />
+                </div>
+                <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => setIsEditingJob(false)} className="btn-secondary" style={{ padding: "10px 20px", fontSize: "13px" }}>Cancel</button>
+                  <button type="submit" className="btn-primary" style={{ padding: "10px 22px", fontSize: "13px" }}>{editingJobId ? "Update Job" : "Save Job"}</button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* Contact Inquiry Detail Modal */}
+        {selectedContact && (
+          <div style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "100%",
+            backgroundColor: "rgba(0, 0, 0, 0.4)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: "20px",
+            boxSizing: "border-box"
+          }}>
+            <div className="glass-panel" style={{
+              width: "100%",
+              maxWidth: "650px",
+              backgroundColor: "#FFFDF9",
+              border: "1px solid #EADDC8",
+              borderRadius: "20px",
+              boxShadow: "0 20px 50px rgba(44, 37, 30, 0.15)",
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: "90vh",
+              overflow: "hidden"
+            }}>
+              {/* Modal Header */}
+              <div style={{
+                padding: "20px 24px",
+                borderBottom: "1px solid var(--card-border)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center"
+              }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "500", color: "#2B1F14", margin: 0, fontFamily: "var(--font-serif), Georgia, serif" }}>
+                  Inquiry Detail
+                </h3>
+                <button 
+                  onClick={() => setSelectedContact(null)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    fontSize: "24px",
+                    color: "var(--fg-muted)",
+                    cursor: "pointer",
+                    padding: 0,
+                    lineHeight: 1
+                  }}
+                >
+                  &times;
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div style={{
+                padding: "24px",
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: "20px",
+                textAlign: "left"
+              }}>
+                {/* Contact Basics */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                  <div>
+                    <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>Sender Name</span>
+                    <div style={{ fontSize: "15px", fontWeight: "600", color: "#2B1F14", marginTop: "4px" }}>{selectedContact.name}</div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>Email Address</span>
+                    <div style={{ fontSize: "15px", fontWeight: "600", marginTop: "4px" }}>
+                      <a href={`mailto:${selectedContact.email}`} style={{ color: "var(--secondary-color)", textDecoration: "none" }}>
+                        {selectedContact.email}
+                      </a>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                  <div>
+                    <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>Subject</span>
+                    <div style={{ fontSize: "15px", fontWeight: "600", color: "#2B1F14", marginTop: "4px" }}>{selectedContact.subject}</div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>Date Submitted</span>
+                    <div style={{ fontSize: "15px", fontWeight: "600", color: "#2B1F14", marginTop: "4px" }}>
+                      {new Date(selectedContact.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Message Body */}
+                <div style={{ borderTop: "1px solid var(--card-border)", paddingTop: "16px" }}>
+                  <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>Message Content</span>
+                  <p style={{
+                    fontSize: "14.5px",
+                    lineHeight: "1.6",
+                    color: "#4A3B2C",
+                    backgroundColor: "rgba(0,0,0,0.015)",
+                    border: "1px solid var(--card-border)",
+                    borderRadius: "10px",
+                    padding: "14px",
+                    marginTop: "6px",
+                    whiteSpace: "pre-wrap"
+                  }}>
+                    {selectedContact.message}
+                  </p>
+                </div>
+
+                {/* Telemetry metadata block */}
+                <div style={{
+                  borderTop: "1px solid var(--card-border)",
+                  paddingTop: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px"
+                }}>
+                  <span style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: "500", color: "var(--fg-muted)" }}>User Telemetry Metadata</span>
+                  
+                  <div style={{
+                    padding: "14px",
+                    backgroundColor: "#FAF6F0",
+                    border: "1px solid rgba(201, 155, 77, 0.2)",
+                    borderRadius: "10px",
+                    fontSize: "13px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "8px"
+                  }}>
+                    <div>
+                      🌐 <strong>IP Address:</strong> <span style={{ fontFamily: "monospace", color: "#C99B4D", fontWeight: "600" }}>{selectedContact.ip_address || "N/A (Local / Legacy)"}</span>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", borderTop: "1px dashed rgba(201, 155, 77, 0.15)", paddingTop: "8px", color: "#2B1F14" }}>
+                      <span>📍 <strong>City:</strong> {selectedContact.city || "Unknown"}</span>
+                      <span>🏛️ <strong>State/Region:</strong> {selectedContact.state || "Unknown"}</span>
+                      <span>🗺️ <strong>Country:</strong> {selectedContact.country || "Unknown"}</span>
+                      <span>🏢 <strong>Provider/ISP:</strong> {selectedContact.provider || "Unknown"}</span>
+                    </div>
+                    <div>
+                      💻 <strong>System Specs:</strong> <span style={{ color: "#2B1F14" }}>{selectedContact.system_info || "N/A"}</span>
+                    </div>
+                    <div style={{ borderTop: "1px dashed rgba(201, 155, 77, 0.15)", paddingTop: "8px", overflowX: "auto" }}>
+                      🔍 <strong>User-Agent:</strong> <br />
+                      <span style={{ fontFamily: "monospace", fontSize: "11px", color: "var(--fg-muted)" }}>{selectedContact.browser_info || "N/A"}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div style={{
+                padding: "16px 24px",
+                borderTop: "1px solid var(--card-border)",
+                display: "flex",
+                justifyContent: "flex-end"
+              }}>
+                <button 
+                  onClick={() => setSelectedContact(null)} 
+                  className="btn-primary" 
+                  style={{ padding: "10px 24px" }}
+                >
+                  Close Inquiry
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: SEO MANAGER */}
+        {activeTab === "seo" && <AdminSeo />}
+        {false && activeTab === "seo" && (
+          <form onSubmit={handleSaveSEO} className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+            <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Global Site Metadata</h3>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <label style={formLabelStyle}>Site Meta Title Template</label>
+              <input
+                type="text"
+                value={seoSettings.title}
+                onChange={(e) => setSeoSettings((prev) => ({ ...prev, title: e.target.value }))}
+                placeholder="Aero - Premium Next.js App"
+                required
+                style={formInputStyle}
+              />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <label style={formLabelStyle}>Site Meta Description</label>
+              <textarea
+                value={seoSettings.description}
+                onChange={(e) => setSeoSettings((prev) => ({ ...prev, description: e.target.value }))}
+                rows="4"
+                placeholder="Deploy high-performance web applications..."
+                required
+                style={formTextareaStyle}
+              />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <label style={formLabelStyle}>Global Target Keywords</label>
+              <input
+                type="text"
+                value={seoSettings.keywords}
+                onChange={(e) => setSeoSettings((prev) => ({ ...prev, keywords: e.target.value }))}
+                placeholder="nextjs, react, vanilla css, premium ui"
+                required
+                style={formInputStyle}
+              />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", borderTop: "1px solid var(--card-border)", paddingTop: "20px", marginTop: "10px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={formLabelStyle}>Favicon Icon URL</label>
+                <input
+                  type="text"
+                  value={seoSettings.favicon_url || ""}
+                  onChange={(e) => setSeoSettings((prev) => ({ ...prev, favicon_url: e.target.value }))}
+                  placeholder="https://example.com/favicon.ico"
+                  style={formInputStyle}
+                />
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={formLabelStyle}>Or Upload Favicon (.ico, .png, .jpg)</label>
+                <input
+                  type="file"
+                  accept=".ico,.png,.jpg,.jpeg"
+                  onChange={handleFaviconUpload}
+                  disabled={loading}
+                  style={{
+                    ...formInputStyle,
+                    padding: "10px 14px",
+                    cursor: "pointer"
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Live Favicon Preview */}
+            {seoSettings.favicon_url && (
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", backgroundColor: "rgba(0,0,0,0.02)", padding: "12px 18px", borderRadius: "8px", border: "1px dashed var(--card-border)" }}>
+                <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--fg-muted)" }}>Live Favicon Preview:</span>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img 
+                  src={seoSettings.favicon_url} 
+                  alt="Favicon Preview" 
+                  style={{ width: "32px", height: "32px", objectFit: "contain", borderRadius: "4px", backgroundColor: "#fff", padding: "2px", border: "1px solid #e3dbc9" }} 
+                />
+                <button 
+                  type="button" 
+                  onClick={() => setSeoSettings(prev => ({ ...prev, favicon_url: "" }))} 
+                  style={{ marginLeft: "auto", background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}
+                >
+                  Remove Favicon
+                </button>
+              </div>
+            )}
+
+            <button type="submit" className="btn-primary" style={{ width: "fit-content", alignSelf: "flex-end", marginTop: "12px" }}>
+              Save Global Configuration
+            </button>
+          </form>
+        )}
+
+        {/* TAB 5: PROFILE SETTINGS */}
+        {activeTab === "profile" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+            <form onSubmit={handleSaveProfile} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+              <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Admin Access Credentials</h3>
+                
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Admin Email Address (OTP will be sent here)</label>
+                    <input
+                      type="email"
+                      value={profileForm.email}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, email: e.target.value }))}
+                      placeholder="objectsquarerajan@gmail.com"
+                      required
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Admin Password</label>
+                    <input
+                      type="password"
+                      value={profileForm.password}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, password: e.target.value }))}
+                      placeholder="Enter new password"
+                      required
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {(!currentAdmin || canManageStaff(currentAdmin)) && (<>
+              <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Website Logo Settings</h3>
+                
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Logo Text (Displays when no image is uploaded)</label>
+                    <input
+                      type="text"
+                      value={profileForm.logo_text}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, logo_text: e.target.value }))}
+                      placeholder="yaqeen"
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Logo Image URL</label>
+                    <input
+                      type="text"
+                      value={profileForm.logo_url}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, logo_url: e.target.value }))}
+                      placeholder="https://example.com/logo.png"
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label style={formLabelStyle}>Or Upload Logo Image</label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleLogoUpload}
+                    style={{
+                      ...formInputStyle,
+                      padding: "8px 12px",
+                      fontSize: "13px"
+                    }}
+                  />
+                </div>
+
+                {/* Logo Preview Block */}
+                <div style={{ marginTop: "10px", padding: "16px", border: "1px dashed var(--card-border)", borderRadius: "8px", background: "rgba(0,0,0,0.01)" }}>
+                  <div style={{ fontSize: "11px", color: "var(--fg-muted)", marginBottom: "8px" }}>Live Logo Preview (Header & Footer Mock)</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px", background: "#fcf9f2", border: "1px solid #e3dbc9", borderRadius: "6px", width: "fit-content" }}>
+                    {profileForm.logo_url ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={profileForm.logo_url} alt="Logo" style={{ height: "32px", maxHeight: "32px", width: "auto", objectFit: "contain", borderRadius: "4px" }} />
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "800", color: "#8c5d31", fontSize: "18px" }}>
+                        <span style={{ width: "8px", height: "8px", backgroundColor: "#3c3022", borderRadius: "50%" }}></span>
+                        <span style={{ textTransform: "capitalize" }}>{profileForm.logo_text || "yaqeen"}</span>
+                      </div>
+                    )}
+                  </div>
+                  {profileForm.logo_url && (
+                    <button type="button" onClick={() => setProfileForm(prev => ({ ...prev, logo_url: "" }))} style={{ color: "#ef4444", border: "none", background: "none", fontSize: "11px", cursor: "pointer", marginTop: "8px", padding: 0 }}>
+                      Remove Image Logo (Fallback to Text)
+                    </button>
+                  )}
+                </div>
+
+                {/* Admin Loader / Login Logo */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", borderTop: "1px solid var(--card-border)", paddingTop: "16px", marginTop: "4px" }}>
+                  <label style={formLabelStyle}>Admin Loader / Login Logo <span style={{ color: "var(--fg-muted)", fontWeight: 400, fontSize: "12px" }}>(admin loading &amp; login screen — blank rakho to site logo use hoga)</span></label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                    <input type="text" value={profileForm.admin_loader_logo_url} onChange={(e) => setProfileForm(prev => ({ ...prev, admin_loader_logo_url: e.target.value }))} placeholder="https://.../admin-logo.png" style={formInputStyle} />
+                    <input type="file" accept="image/*" onChange={handleAdminLogoUpload} style={{ ...formInputStyle, padding: "8px 12px", fontSize: "13px" }} />
+                  </div>
+                  <div style={{ marginTop: "6px", padding: "12px", border: "1px dashed var(--card-border)", borderRadius: "8px", background: "rgba(0,0,0,0.01)", display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Preview:</span>
+                    {(profileForm.admin_loader_logo_url || profileForm.logo_url) ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={profileForm.admin_loader_logo_url || profileForm.logo_url} alt="Admin logo" style={{ height: "36px", width: "auto", objectFit: "contain" }} />
+                    ) : (
+                      <span style={{ fontSize: "12px", color: "var(--fg-muted)" }}>Using site logo / text fallback</span>
+                    )}
+                    {profileForm.admin_loader_logo_url && (
+                      <button type="button" onClick={() => setProfileForm(prev => ({ ...prev, admin_loader_logo_url: "" }))} style={{ marginLeft: "auto", color: "#ef4444", border: "none", background: "none", fontSize: "11px", cursor: "pointer", padding: 0 }}>Remove (use site logo)</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "16px", borderLeft: "4px solid #C99B4D" }}>
+                <div>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C99B4D" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect width="20" height="16" x="2" y="4" rx="2"></rect>
+                      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>
+                    </svg>
+                    Website Form Notification Email(s)
+                  </h3>
+                  <p style={{ fontSize: "13px", color: "var(--fg-muted)", marginTop: "4px", lineHeight: "1.5" }}>
+                    Website ke sabhi forms (Contact Us, Free Trial, Student Registration, Teacher Application, Newsletter, etc.) ka email notification sirf inhin email addresses par bheja jayega.
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label style={formLabelStyle}>
+                    Notification Recipient Email(s) <span style={{ color: "var(--fg-muted)", fontSize: "12px", fontWeight: "normal" }}>(Ek se zyada ke liye comma <code>,</code> lagayein)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={profileForm.notification_emails || ""}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, notification_emails: e.target.value }))}
+                    placeholder="e.g. admin@yaqeeninstitute.com, admissions@yaqeeninstitute.com"
+                    style={formInputStyle}
+                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                    <span style={{ fontSize: "12px", color: "var(--fg-muted)" }}>Active Recipient(s):</span>
+                    {(profileForm.notification_emails || "").split(/[\r\n,;]+/).map(e => e.trim()).filter(Boolean).length > 0 ? (
+                      (profileForm.notification_emails || "").split(/[\r\n,;]+/).map(e => e.trim()).filter(Boolean).map((em, idx) => (
+                        <span key={idx} style={{ fontSize: "11px", backgroundColor: "rgba(201, 155, 77, 0.15)", color: "#C99B4D", padding: "3px 10px", borderRadius: "12px", border: "1px solid rgba(201, 155, 77, 0.3)", fontWeight: "500" }}>
+                          ✓ {em}
+                        </span>
+                      ))
+                    ) : (
+                      <span style={{ fontSize: "12px", color: "#eab308", fontStyle: "italic" }}>
+                        Default: All Admin Accounts & Contact Email ({profileForm.contact_email || "support@yaqeeninstitute.online"})
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Contact Details & Social Media Links</h3>
+                
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Contact Email Address</label>
+                    <input
+                      type="email"
+                      value={profileForm.contact_email}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, contact_email: e.target.value }))}
+                      placeholder="info@yaqeeninstitute.com"
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Contact Phone / WhatsApp</label>
+                    <input
+                      type="text"
+                      value={profileForm.contact_phone}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, contact_phone: e.target.value }))}
+                      placeholder="+44 7700 183483"
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Working Hours Details</label>
+                    <input
+                      type="text"
+                      value={profileForm.contact_hours}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, contact_hours: e.target.value }))}
+                      placeholder="24x7 - We're always here for you."
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Worldwide Support Subtitle</label>
+                    <input
+                      type="text"
+                      value={profileForm.contact_support}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, contact_support: e.target.value }))}
+                      placeholder="We serve students from around the world."
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", borderTop: "1px dashed var(--card-border)", paddingTop: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Facebook Profile URL</label>
+                    <input
+                      type="text"
+                      value={profileForm.social_facebook}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, social_facebook: e.target.value }))}
+                      placeholder="https://facebook.com/..."
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Instagram Profile URL</label>
+                    <input
+                      type="text"
+                      value={profileForm.social_instagram}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, social_instagram: e.target.value }))}
+                      placeholder="https://instagram.com/..."
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>YouTube Channel URL</label>
+                    <input
+                      type="text"
+                      value={profileForm.social_youtube}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, social_youtube: e.target.value }))}
+                      placeholder="https://youtube.com/..."
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>WhatsApp Chat Link / Number</label>
+                    <input
+                      type="text"
+                      value={profileForm.social_whatsapp}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, social_whatsapp: e.target.value }))}
+                      placeholder="https://wa.me/..."
+                      style={formInputStyle}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Custom Tracking & Header / Body / Footer Scripts */}
+              <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px", marginBottom: "8px" }}>
+                    <h3 style={{ fontSize: "18px", fontWeight: "600", display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span>📊</span> Website Tracking &amp; Custom Scripts
+                    </h3>
+                    <span style={{ fontSize: "11px", background: "rgba(59, 130, 246, 0.1)", color: "#3b82f6", border: "1px solid rgba(59, 130, 246, 0.2)", padding: "3px 8px", borderRadius: "12px", fontWeight: "600" }}>
+                      Header • Body • Footer
+                    </span>
+                  </div>
+                  <p style={{ color: "var(--fg-muted)", fontSize: "13px", lineHeight: "1.5" }}>
+                    Google Analytics (GA4), Google Tag Manager (GTM), Google Ads, Meta Pixel ya custom live chat widget scripts yahan add karein. Ye scripts pure website ke har page pe automatically load hongi.
+                  </p>
+                </div>
+
+                {/* Google Tag ID / GTM ID / GA4 */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--card-border)", borderRadius: "8px", padding: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <label style={{ ...formLabelStyle, display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ fontSize: "14px" }}>🎯</span> Google Measurement / Tag ID (GA4 / Google Ads)
+                    </label>
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>e.g. G-6RGZGGEWN1 ya AW-18317816315</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={profileForm.google_tag_id}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, google_tag_id: e.target.value }))}
+                    placeholder="G-XXXXXXXXXX ya AW-XXXXXXXXXX"
+                    style={formInputStyle}
+                  />
+                  <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>
+                    💡 Agar aapke paas Measurement ID hai to yahan enter karein. Agar direct <code>&lt;script&gt;</code> code snippet hai, to use neeche <strong>Header Scripts</strong> box me paste karein.
+                  </span>
+                </div>
+
+                {/* Header Scripts (<head>) */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <label style={{ ...formLabelStyle, display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>🏷️</span> Header Scripts (<code style={{ fontSize: "12px", color: "var(--primary-color)" }}>&lt;head&gt;</code> Insertion)
+                    </label>
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Meta Pixel, GTM Head, Verification Tags</span>
+                  </div>
+                  <textarea
+                    rows={5}
+                    value={profileForm.header_scripts}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, header_scripts: e.target.value }))}
+                    placeholder={`<!-- Paste scripts to be injected into <head> -->\n<script>\n  // Google Tag Manager / Meta Pixel Code\n</script>`}
+                    style={{
+                      ...formInputStyle,
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                      fontSize: "12px",
+                      lineHeight: "1.4",
+                      tabSize: 2,
+                      whiteSpace: "pre"
+                    }}
+                  />
+                </div>
+
+                {/* Body (Top) Scripts (<body>) */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <label style={{ ...formLabelStyle, display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>🚀</span> Body (Top) Scripts (<code style={{ fontSize: "12px", color: "var(--primary-color)" }}>&lt;body&gt;</code> Start Insertion)
+                    </label>
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>GTM &lt;noscript&gt; iframe, Top banners</span>
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={profileForm.body_scripts}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, body_scripts: e.target.value }))}
+                    placeholder={`<!-- Paste scripts/noscripts for top of <body> -->\n<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-XXXX" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>`}
+                    style={{
+                      ...formInputStyle,
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                      fontSize: "12px",
+                      lineHeight: "1.4",
+                      tabSize: 2,
+                      whiteSpace: "pre"
+                    }}
+                  />
+                </div>
+
+                {/* Footer Scripts (Before </body>) */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <label style={{ ...formLabelStyle, display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>⚡</span> Footer Scripts (Before <code style={{ fontSize: "12px", color: "var(--primary-color)" }}>&lt;/body&gt;</code> Insertion)
+                    </label>
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Chat Widgets (Tidio/Crisp), Conversion Pixels, Custom JS</span>
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={profileForm.footer_scripts}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, footer_scripts: e.target.value }))}
+                    placeholder={`<!-- Paste scripts to be injected at bottom before </body> -->\n<script src="//code.tidio.co/xxxxxx.js" async></script>`}
+                    style={{
+                      ...formInputStyle,
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                      fontSize: "12px",
+                      lineHeight: "1.4",
+                      tabSize: 2,
+                      whiteSpace: "pre"
+                    }}
+                  />
+                </div>
+              </div>
+              </>)}
+
+              <button type="submit" className="btn-primary" style={{ width: "fit-content", alignSelf: "flex-end" }}>
+                Save Settings & Credentials
+              </button>
+            </form>
+
+            {/* Staff management moved to its own advanced tab */}
+            {canManageStaff(currentAdmin) && (
+              <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Staff Accounts</h3>
+                  <p style={{ color: "var(--fg-muted)", fontSize: "13px", marginTop: "10px" }}>
+                    Team members, roles and per-section permissions are now managed in the dedicated <strong>Staff Accounts</strong> section — with roles, suspend/activate and access control.
+                  </p>
+                </div>
+                <button type="button" onClick={() => handleTabChange("staff")} className="btn-primary" style={{ width: "fit-content" }}>👥 Open Staff Accounts →</button>
+              </div>
+            )}
+
+            {/* Sitemap & Robots Panel */}
+            {(!currentAdmin || canManageStaff(currentAdmin)) && (
+            <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+              <div>
+                <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Sitemap &amp; Robots.txt</h3>
+                <p style={{ color: "var(--fg-muted)", fontSize: "13px", marginTop: "10px" }}>
+                  Auto-generate your <code>sitemap.xml</code> from all live pages, or <b>upload your own</b> <code>sitemap.xml</code> / <code>robots.txt</code>. When a file is uploaded, <b>only that file is served</b> at <code>/sitemap.xml</code> or <code>/robots.txt</code> and the generated one is ignored.
+                </p>
+              </div>
+
+              {/* Auto-generate */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={handleGenerateSitemap}
+                    className="btn-primary"
+                    style={{ width: "fit-content", display: "inline-flex", alignItems: "center", gap: "8px" }}
+                  >
+                    🌐 Generate Sitemap
+                  </button>
+                  {customFiles.sitemap.active && (
+                    <span style={{ fontSize: "12px", color: "#b45309", background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", padding: "4px 10px", borderRadius: "10px" }}>
+                      ⚠️ A custom sitemap is uploaded — it overrides the generated one.
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Upload cards for sitemap.xml and robots.txt */}
+              {[
+                { type: "sitemap", label: "sitemap.xml", accept: ".xml,application/xml,text/xml", path: "/sitemap.xml" },
+                { type: "robots", label: "robots.txt", accept: ".txt,text/plain", path: "/robots.txt" },
+              ].map((f) => {
+                const state = customFiles[f.type];
+                const busy = customFilesBusy === f.type;
+                return (
+                  <div key={f.type} style={{ border: "1px solid var(--card-border)", borderRadius: "12px", padding: "16px 18px", display: "flex", flexDirection: "column", gap: "12px", background: "rgba(255,255,255,0.02)" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <strong style={{ fontSize: "14px" }}>Custom <code>{f.label}</code></strong>
+                        {state.active ? (
+                          <span style={{ fontSize: "11px", fontWeight: 600, color: "#059669", background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", padding: "3px 9px", borderRadius: "10px" }}>
+                            ● Uploaded — serving this
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--fg-muted)", background: "rgba(120,120,120,0.1)", border: "1px solid var(--card-border)", padding: "3px 9px", borderRadius: "10px" }}>
+                            Using generated
+                          </span>
+                        )}
+                      </div>
+                      <a href={f.path} target="_blank" rel="noreferrer" style={{ fontSize: "12px", color: "var(--secondary-color)" }}>View {f.path} ↗</a>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      <label className="btn-secondary" style={{ width: "fit-content", display: "inline-flex", alignItems: "center", gap: "8px", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1, margin: 0 }}>
+                        {busy ? "⏳ Uploading..." : (state.active ? "⬆️ Replace file" : "⬆️ Upload file")}
+                        <input
+                          type="file"
+                          accept={f.accept}
+                          disabled={busy}
+                          style={{ display: "none" }}
+                          onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; handleUploadCustomFile(f.type, file); }}
+                        />
+                      </label>
+                      {state.active && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveCustomFile(f.type)}
+                          disabled={busy}
+                          style={{ fontSize: "13px", color: "#ef4444", background: "transparent", border: "1px solid rgba(239,68,68,0.35)", borderRadius: "8px", padding: "7px 14px", cursor: busy ? "not-allowed" : "pointer" }}
+                        >
+                          🗑️ Remove (use generated)
+                        </button>
+                      )}
+                    </div>
+
+                    {state.active && state.content && (
+                      <pre style={{ margin: 0, maxHeight: "120px", overflow: "auto", fontSize: "11px", lineHeight: 1.5, background: "rgba(0,0,0,0.04)", border: "1px solid var(--card-border)", borderRadius: "8px", padding: "10px", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--fg-muted)" }}>
+                        {state.content.slice(0, 1000)}{state.content.length > 1000 ? "\n… (truncated)" : ""}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            )}
+
+            {/* Database Backup & Email Exporter Panel */}
+            {(!currentAdmin || canManageStaff(currentAdmin)) && (
+            <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "600", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span>🗄️</span> Full Database Email Backup
+                </h3>
+                <span style={{ fontSize: "11px", background: "rgba(16, 185, 129, 0.1)", color: "#10b981", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "3px 8px", borderRadius: "12px", fontWeight: "600" }}>
+                  Auto Attachment to All Admins
+                </span>
+              </div>
+              <p style={{ color: "var(--fg-muted)", fontSize: "13px", lineHeight: "1.5" }}>
+                Ek click par database ke saare tables (Contacts, Leads, Teachers, Student Applications, Courses, Pricing Plans, Testimonials, Blogs, SEO &amp; Site Settings) ka complete JSON backup snapshot generate hoga aur sabhi active admin accounts ke email address par safely email kar diya jaega.
+              </p>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={handleEmailDatabaseBackup}
+                  disabled={backupLoading}
+                  className="btn-primary"
+                  style={{
+                    width: "fit-content",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                    color: "#fff",
+                    border: "none",
+                    cursor: backupLoading ? "not-allowed" : "pointer",
+                    opacity: backupLoading ? 0.7 : 1
+                  }}
+                >
+                  {backupLoading ? "⏳ Generating & Sending..." : "📦 Email Full Database Backup to All Admins"}
+                </button>
+                <span style={{ fontSize: "12px", color: "var(--fg-muted)" }}>
+                  Attachment format: <code>yaqeen-db-backup-[date].json</code>
+                </span>
+              </div>
+            </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB: MANAGE TEACHERS */}
+        {activeTab === "teachers" && (
+          <div>
+            {!isEditingTeacher ? (
+              // Teachers List Screen
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <AdminDataTable
+                  title="Islamic Teachers"
+                  subtitle="Manage qualified Quran and Islamic studies teacher profiles."
+                  data={teachers}
+                  keyField="id"
+                  defaultPageSize={10}
+                  searchPlaceholder="Search teachers by name, language, specialization..."
+                  searchKeys={["name", "languages", "experience", "specialization", "bio"]}
+                  headerAction={
+                    <button onClick={triggerCreateTeacher} className="btn-primary" style={{ padding: "8px 16px", fontSize: "13px" }}>
+                      + Register Teacher
+                    </button>
+                  }
+                  columns={[
+                    {
+                      key: "avatar_url",
+                      label: "Avatar",
+                      width: "60px",
+                      align: "center",
+                      render: (t) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img 
+                          src={t.avatar_url || "/images/teacher_rahman.png"} 
+                          alt={t.name} 
+                          style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", border: "1px solid var(--card-border)", margin: "0 auto", display: "block" }} 
+                        />
+                      )
+                    },
+                    {
+                      key: "name",
+                      label: "Name & Title",
+                      render: (t) => (
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <strong style={{ color: "#2B1F14" }}>{t.name}</strong>
+                          {t.title && <span style={{ fontSize: "11px", color: "#8c5d31" }}>{t.title}</span>}
+                        </div>
+                      )
+                    },
+                    {
+                      key: "languages",
+                      label: "Languages",
+                      render: (t) => t.languages || "—"
+                    },
+                    {
+                      key: "experience",
+                      label: "Experience",
+                      render: (t) => t.experience || "—"
+                    },
+                    {
+                      key: "specialization",
+                      label: "Specialization",
+                      render: (t) => t.specialization || "—"
+                    },
+                    {
+                      key: "order_index",
+                      label: "Sort Order",
+                      align: "center",
+                      width: "90px",
+                      render: (t) => t.order_index ?? 0
+                    }
+                  ]}
+                  actions={(t) => (
+                    <>
+                      <button onClick={() => triggerEditTeacher(t)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                        Edit
+                      </button>
+                      <button onClick={() => handleDeleteTeacher(t.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                />
+              </div>
+            ) : (
+              // Teacher Register / Edit Form
+              <form onSubmit={handleSaveTeacher} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Teacher Details</h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.5fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Full Name *</label>
+                      <input
+                        type="text"
+                        value={teacherForm.name}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, name: e.target.value }))}
+                        placeholder="e.g. Ustadh Mazin Yasir"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Title / Role Tag</label>
+                      <input
+                        type="text"
+                        value={teacherForm.title}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, title: e.target.value }))}
+                        placeholder="e.g. Senior Quran & Tajweed Specialist"
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Sort Order Index</label>
+                      <input
+                        type="number"
+                        value={teacherForm.order_index}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, order_index: e.target.value }))}
+                        placeholder="e.g. 1"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Languages *</label>
+                      <input
+                        type="text"
+                        value={teacherForm.languages}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, languages: e.target.value }))}
+                        placeholder="e.g. Arabic, English, Urdu"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Experience *</label>
+                      <input
+                        type="text"
+                        value={teacherForm.experience}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, experience: e.target.value }))}
+                        placeholder="e.g. 8+ Years"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Specialization / Subjects *</label>
+                      <input
+                        type="text"
+                        value={teacherForm.specialization}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, specialization: e.target.value }))}
+                        placeholder="e.g. Qur'an, Tajweed, Islamic Studies"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Education & Ijazah (Qualifications)</label>
+                      <input
+                        type="text"
+                        value={teacherForm.education}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, education: e.target.value }))}
+                        placeholder="e.g. Degree in Islamic Studies • Ijazah in Hafs 'an 'Asim"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Bio / Description (shown in Teacher Details Modal)</label>
+                    <RichTextEditor
+                      value={teacherForm.bio}
+                      onChange={(html) => setTeacherForm(prev => ({ ...prev, bio: html }))}
+                      placeholder="Passionate and dedicated educator with a love for helping students grow and succeed in their Quranic journey…"
+                      minHeight="110px"
+                    />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Avatar Image URL</label>
+                      <input
+                        type="text"
+                        value={teacherForm.avatar_url}
+                        onChange={(e) => setTeacherForm(prev => ({ ...prev, avatar_url: e.target.value }))}
+                        placeholder="https://images.unsplash.com/... or /images/..."
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Or Upload Local Avatar Image</label>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleAvatarUpload}
+                          disabled={uploading}
+                          style={{
+                            ...formInputStyle,
+                            padding: "8px 12px",
+                            flex: 1,
+                            fontSize: "13px"
+                          }}
+                        />
+                        {uploading && <span style={{ color: "var(--secondary-color)", fontSize: "12px" }}>Uploading...</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {teacherForm.avatar_url && (
+                    <div style={{ marginTop: "4px", border: "1px solid var(--card-border)", borderRadius: "8px", padding: "8px", width: "fit-content", display: "flex", gap: "12px", alignItems: "center", backgroundColor: "rgba(255,255,255,0.01)" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={teacherForm.avatar_url} alt="Preview" style={{ width: "60px", height: "60px", borderRadius: "50%", objectFit: "cover" }} />
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Avatar Preview</span>
+                        <button type="button" onClick={() => setTeacherForm(prev => ({ ...prev, avatar_url: "" }))} style={{ color: "#ef4444", border: "none", background: "none", fontSize: "11px", cursor: "pointer", textAlign: "left", padding: 0 }}>Remove Image</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Detail Page Content Panel (shown on /teachers/[id]) */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <div>
+                    <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Detail Page Content</h3>
+                    <p style={{ color: "var(--fg-muted)", fontSize: "12px", marginTop: "8px" }}>
+                      Yeh sab fields public teacher detail page (<code>/teachers/{editingTeacherId || "id"}</code>) par dynamically dikhte hain. Khaali chhodoge to sensible default aayega.
+                    </p>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Gender (for pronouns)</label>
+                      <select value={teacherForm.gender} onChange={(e) => setTeacherForm(prev => ({ ...prev, gender: e.target.value }))} style={formInputStyle}>
+                        <option value="">Auto (from name)</option>
+                        <option value="male">Male (He/His)</option>
+                        <option value="female">Female (She/Her)</option>
+                      </select>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Country</label>
+                      <input type="text" value={teacherForm.country} onChange={(e) => setTeacherForm(prev => ({ ...prev, country: e.target.value }))} placeholder="e.g. Egypt" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>URL Slug (optional)</label>
+                      <input type="text" value={teacherForm.slug} onChange={(e) => setTeacherForm(prev => ({ ...prev, slug: e.target.value }))} placeholder="auto from name" style={formInputStyle} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Headline (role line under name)</label>
+                    <input type="text" value={teacherForm.headline} onChange={(e) => setTeacherForm(prev => ({ ...prev, headline: e.target.value }))} placeholder="e.g. Online Quran & Arabic Teacher" style={formInputStyle} />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Education — Line 1 (pill)</label>
+                      <input type="text" value={teacherForm.education_title} onChange={(e) => setTeacherForm(prev => ({ ...prev, education_title: e.target.value }))} placeholder="e.g. Bachelor's Degree in Islamic Studies" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Education — Line 2 (pill)</label>
+                      <input type="text" value={teacherForm.education_sub} onChange={(e) => setTeacherForm(prev => ({ ...prev, education_sub: e.target.value }))} placeholder="e.g. Al-Azhar University — Graduation" style={formInputStyle} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Short Bio (hero intro paragraph)</label>
+                    <textarea value={teacherForm.short_bio} onChange={(e) => setTeacherForm(prev => ({ ...prev, short_bio: e.target.value }))} placeholder="1–2 sentence intro shown in the hero card…" style={{ ...formInputStyle, minHeight: "70px", resize: "vertical" }} />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Quote (gold quote block)</label>
+                    <textarea value={teacherForm.quote} onChange={(e) => setTeacherForm(prev => ({ ...prev, quote: e.target.value }))} placeholder="A short inspiring quote from the teacher…" style={{ ...formInputStyle, minHeight: "60px", resize: "vertical" }} />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Long Bio (&quot;About Me&quot; paragraph)</label>
+                    <textarea value={teacherForm.long_bio} onChange={(e) => setTeacherForm(prev => ({ ...prev, long_bio: e.target.value }))} placeholder="Detailed background shown in the About Me section…" style={{ ...formInputStyle, minHeight: "100px", resize: "vertical" }} />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Highlight 01 — Title</label>
+                      <input type="text" value={teacherForm.approach_title} onChange={(e) => setTeacherForm(prev => ({ ...prev, approach_title: e.target.value }))} placeholder="e.g. Student-Centered Learning Approach" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Highlight 02 — Title</label>
+                      <input type="text" value={teacherForm.academic_title} onChange={(e) => setTeacherForm(prev => ({ ...prev, academic_title: e.target.value }))} placeholder="e.g. Strong Academic Background" style={formInputStyle} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Highlight 01 — Description</label>
+                      <textarea value={teacherForm.approach_desc} onChange={(e) => setTeacherForm(prev => ({ ...prev, approach_desc: e.target.value }))} placeholder="Describe the teaching approach…" style={{ ...formInputStyle, minHeight: "90px", resize: "vertical" }} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Highlight 02 — Description</label>
+                      <textarea value={teacherForm.academic_desc} onChange={(e) => setTeacherForm(prev => ({ ...prev, academic_desc: e.target.value }))} placeholder="Describe the academic background…" style={{ ...formInputStyle, minHeight: "90px", resize: "vertical" }} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* "About Her/Him" Section (right side, top) */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <div>
+                    <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>&quot;About&quot; Section (right side)</h3>
+                    <p style={{ color: "var(--fg-muted)", fontSize: "12px", marginTop: "8px" }}>
+                      Detail page ke right side ka upar wala block. Title ke pehle teacher ki pronoun (She/He) auto lagti hai.
+                    </p>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Title — Line 1</label>
+                      <input type="text" value={teacherForm.about_block?.title_line1 || ""} onChange={(e) => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, title_line1: e.target.value } }))} placeholder="A Friendly, Supportive and" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Title — Highlight (gold)</label>
+                      <input type="text" value={teacherForm.about_block?.title_highlight || ""} onChange={(e) => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, title_highlight: e.target.value } }))} placeholder="Professional Teacher" style={formInputStyle} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Subtitle (after pronoun She/He)</label>
+                    <input type="text" value={teacherForm.about_block?.subtitle_rest || ""} onChange={(e) => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, subtitle_rest: e.target.value } }))} placeholder="is committed to creating a positive and encouraging learning environment for every student." style={formInputStyle} />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <label style={formLabelStyle}>Feature Cards</label>
+                      <button type="button" onClick={() => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, features: [...(p.about_block?.features || []), { title: "", desc: "" }] } }))} className="btn-secondary" style={{ padding: "6px 12px", fontSize: "12px" }}>+ Add Card</button>
+                    </div>
+                    {(teacherForm.about_block?.features || []).map((f, i) => (
+                      <div key={i} style={{ border: "1px solid var(--card-border)", borderRadius: "10px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px", background: "rgba(255,255,255,0.02)" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg-muted)" }}>Card {i + 1}</span>
+                          <button type="button" onClick={() => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, features: p.about_block.features.filter((_, idx) => idx !== i) } }))} style={{ color: "#ef4444", background: "transparent", border: "none", fontSize: "12px", cursor: "pointer" }}>Remove</button>
+                        </div>
+                        <input type="text" value={f.title || ""} onChange={(e) => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, features: p.about_block.features.map((x, idx) => idx === i ? { ...x, title: e.target.value } : x) } }))} placeholder="Card title" style={formInputStyle} />
+                        <textarea value={f.desc || ""} onChange={(e) => setTeacherForm(p => ({ ...p, about_block: { ...p.about_block, features: p.about_block.features.map((x, idx) => idx === i ? { ...x, desc: e.target.value } : x) } }))} placeholder="Card description" style={{ ...formInputStyle, minHeight: "56px", resize: "vertical" }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* "Verified Teachers" Section (right side, bottom) */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <div>
+                    <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>&quot;Verified Teachers&quot; Section</h3>
+                    <p style={{ color: "var(--fg-muted)", fontSize: "12px", marginTop: "8px" }}>
+                      Detail page ke doosre section ka right side (&quot;OUR VERIFIED TEACHERS&quot; + cards).
+                    </p>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Badge Label</label>
+                      <input type="text" value={teacherForm.verified_block?.badge || ""} onChange={(e) => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, badge: e.target.value } }))} placeholder="OUR VERIFIED TEACHERS" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Title — Line 1</label>
+                      <input type="text" value={teacherForm.verified_block?.title_line1 || ""} onChange={(e) => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, title_line1: e.target.value } }))} placeholder="Dedicated. Experienced." style={formInputStyle} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Title — Highlight (gold)</label>
+                    <input type="text" value={teacherForm.verified_block?.title_highlight || ""} onChange={(e) => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, title_highlight: e.target.value } }))} placeholder="Committed to Your Child's Success." style={formInputStyle} />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Subtitle</label>
+                    <textarea value={teacherForm.verified_block?.subtitle || ""} onChange={(e) => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, subtitle: e.target.value } }))} placeholder="Our teachers are carefully selected…" style={{ ...formInputStyle, minHeight: "60px", resize: "vertical" }} />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <label style={formLabelStyle}>Verification Cards</label>
+                      <button type="button" onClick={() => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, cards: [...(p.verified_block?.cards || []), { title: "", desc: "" }] } }))} className="btn-secondary" style={{ padding: "6px 12px", fontSize: "12px" }}>+ Add Card</button>
+                    </div>
+                    {(teacherForm.verified_block?.cards || []).map((c, i) => (
+                      <div key={i} style={{ border: "1px solid var(--card-border)", borderRadius: "10px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px", background: "rgba(255,255,255,0.02)" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg-muted)" }}>Card {i + 1}</span>
+                          <button type="button" onClick={() => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, cards: p.verified_block.cards.filter((_, idx) => idx !== i) } }))} style={{ color: "#ef4444", background: "transparent", border: "none", fontSize: "12px", cursor: "pointer" }}>Remove</button>
+                        </div>
+                        <input type="text" value={c.title || ""} onChange={(e) => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, cards: p.verified_block.cards.map((x, idx) => idx === i ? { ...x, title: e.target.value } : x) } }))} placeholder="Card title" style={formInputStyle} />
+                        <textarea value={c.desc || ""} onChange={(e) => setTeacherForm(p => ({ ...p, verified_block: { ...p.verified_block, cards: p.verified_block.cards.map((x, idx) => idx === i ? { ...x, desc: e.target.value } : x) } }))} placeholder="Card description" style={{ ...formInputStyle, minHeight: "56px", resize: "vertical" }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Teacher SEO Panel */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <div>
+                    <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Teacher SEO (Search Engine)</h3>
+                    <p style={{ color: "var(--fg-muted)", fontSize: "12px", marginTop: "8px" }}>
+                      Meta title, description &amp; keywords for this teacher&apos;s detail page. Khaali chhodoge to name/title aur short bio se auto ban jayega.
+                    </p>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>SEO Meta Title</label>
+                    <input type="text" value={teacherForm.seo_title} onChange={(e) => setTeacherForm(prev => ({ ...prev, seo_title: e.target.value }))} placeholder="e.g. Ustadh Mazin Yasir — Quran & Tajweed Teacher | Yaqeen Institute" style={formInputStyle} />
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>{(teacherForm.seo_title || "").length} chars (ideal ≤ 60)</span>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>SEO Meta Description</label>
+                    <textarea value={teacherForm.seo_description} onChange={(e) => setTeacherForm(prev => ({ ...prev, seo_description: e.target.value }))} placeholder="Short summary shown in Google results…" style={{ ...formInputStyle, minHeight: "70px", resize: "vertical" }} />
+                    <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>{(teacherForm.seo_description || "").length} chars (ideal ≤ 160)</span>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>SEO Keywords (comma separated)</label>
+                    <input type="text" value={teacherForm.seo_keywords} onChange={(e) => setTeacherForm(prev => ({ ...prev, seo_keywords: e.target.value }))} placeholder="e.g. quran teacher, tajweed, online quran classes" style={formInputStyle} />
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: "flex", gap: "16px", justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => { setIsEditingTeacher(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="btn-secondary" style={{ padding: "12px 24px" }}>
+                    Cancel & Return
+                  </button>
+                  <button type="submit" className="btn-primary" style={{ padding: "12px 32px" }}>
+                    {editingTeacherId ? "Save Profile" : "Register Teacher"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* TAB: MANAGE TESTIMONIALS */}
+        {activeTab === "testimonials" && (
+          <div>
+            {!isEditingTestimonial ? (
+              // Testimonials List Screen
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <AdminDataTable
+                  title="Client Testimonials"
+                  subtitle="Parent and student feedback displayed across website pages."
+                  data={testimonials}
+                  keyField="id"
+                  defaultPageSize={10}
+                  searchPlaceholder="Search testimonials by name, role, content..."
+                  searchKeys={["name", "role", "content", "page_target"]}
+                  headerAction={
+                    <button onClick={triggerCreateTestimonial} className="btn-primary" style={{ padding: "8px 16px", fontSize: "13px" }}>
+                      + Add Testimonial
+                    </button>
+                  }
+                  columns={[
+                    {
+                      key: "avatar_url",
+                      label: "Avatar",
+                      width: "60px",
+                      align: "center",
+                      render: (t) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img 
+                          src={t.avatar_url || "/images/testi_ayesha.png"} 
+                          alt={t.name} 
+                          style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", border: "1px solid var(--card-border)", margin: "0 auto", display: "block" }} 
+                        />
+                      )
+                    },
+                    {
+                      key: "name",
+                      label: "Author Name",
+                      render: (t) => <strong style={{ color: "#2B1F14" }}>{t.name}</strong>
+                    },
+                    {
+                      key: "role",
+                      label: "Role",
+                      render: (t) => t.role || "—"
+                    },
+                    {
+                      key: "content",
+                      label: "Content Snippet",
+                      render: (t) => (
+                        <div style={{ maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.content}>
+                          {t.content}
+                        </div>
+                      )
+                    },
+                    {
+                      key: "page_target",
+                      label: "Target Pages",
+                      render: (t) => (
+                        <span style={{ padding: "3px 8px", background: "rgba(201, 155, 77, 0.08)", border: "1px solid rgba(201, 155, 77, 0.2)", borderRadius: "4px", fontSize: "11px", color: "#8c5d31", fontWeight: "600", textTransform: "uppercase" }}>
+                          {t.page_target === "all" ? "All Pages" : t.page_target}
+                        </span>
+                      )
+                    },
+                    {
+                      key: "order_index",
+                      label: "Sort Order",
+                      align: "center",
+                      width: "90px",
+                      render: (t) => t.order_index ?? 0
+                    }
+                  ]}
+                  actions={(t) => (
+                    <>
+                      <button onClick={() => triggerEditTestimonial(t)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                        Edit
+                      </button>
+                      <button onClick={() => handleDeleteTestimonial(t.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                />
+              </div>
+            ) : (
+              // Testimonial Register / Edit Form
+              <form onSubmit={handleSaveTestimonial} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Testimonial Details</h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Author Full Name *</label>
+                      <input
+                        type="text"
+                        value={testimonialForm.name}
+                        onChange={(e) => setTestimonialForm(prev => ({ ...prev, name: e.target.value }))}
+                        placeholder="e.g. Ayesha Khan"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Sort Order Index</label>
+                      <input
+                        type="number"
+                        value={testimonialForm.order_index}
+                        onChange={(e) => setTestimonialForm(prev => ({ ...prev, order_index: e.target.value }))}
+                        placeholder="e.g. 1"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Author Description / Role *</label>
+                    <input
+                      type="text"
+                      value={testimonialForm.role}
+                      onChange={(e) => setTestimonialForm(prev => ({ ...prev, role: e.target.value }))}
+                      placeholder="e.g. Mother of 2, Adult Learner, Parent"
+                      required
+                      style={formInputStyle}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Testimonial Content *</label>
+                    <RichTextEditor
+                      value={testimonialForm.content}
+                      onChange={(html) => setTestimonialForm(prev => ({ ...prev, content: html }))}
+                      placeholder="Write customer review..."
+                      minHeight="120px"
+                    />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Avatar Image URL</label>
+                      <input
+                        type="text"
+                        value={testimonialForm.avatar_url}
+                        onChange={(e) => setTestimonialForm(prev => ({ ...prev, avatar_url: e.target.value }))}
+                        placeholder="https://images.unsplash.com/... or /images/..."
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Or Upload Local Avatar Image</label>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleTestimonialAvatarUpload}
+                          disabled={uploading}
+                          style={{
+                            ...formInputStyle,
+                            padding: "8px 12px",
+                            flex: 1,
+                            fontSize: "13px"
+                          }}
+                        />
+                        {uploading && <span style={{ color: "var(--secondary-color)", fontSize: "12px" }}>Uploading...</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {testimonialForm.avatar_url && (
+                    <div style={{ marginTop: "4px", border: "1px solid var(--card-border)", borderRadius: "8px", padding: "8px", width: "fit-content", display: "flex", gap: "12px", alignItems: "center", backgroundColor: "rgba(255,255,255,0.01)" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={testimonialForm.avatar_url} alt="Preview" style={{ width: "60px", height: "60px", borderRadius: "50%", objectFit: "cover" }} />
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Avatar Preview</span>
+                        <button type="button" onClick={() => setTestimonialForm(prev => ({ ...prev, avatar_url: "" }))} style={{ color: "#ef4444", border: "none", background: "none", fontSize: "11px", cursor: "pointer", textAlign: "left", padding: 0 }}>Remove Image</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Target Pages Checkboxes */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", borderTop: "1px solid var(--card-border)", paddingTop: "20px", marginTop: "10px" }}>
+                    <label style={formLabelStyle}>Target Pages for Display *</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "24px", marginTop: "8px" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px", fontWeight: "600" }}>
+                        <input
+                          type="checkbox"
+                          checked={testimonialForm.page_targets.all}
+                          onChange={(e) => setTestimonialForm(prev => ({
+                            ...prev,
+                            page_targets: {
+                              ...prev.page_targets,
+                              all: e.target.checked,
+                              home: false,
+                              about: false,
+                              courses: false,
+                              pricing: false
+                            }
+                          }))}
+                        />
+                        Show on All Pages
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px", opacity: testimonialForm.page_targets.all ? 0.5 : 1 }}>
+                        <input
+                          type="checkbox"
+                          disabled={testimonialForm.page_targets.all}
+                          checked={testimonialForm.page_targets.home}
+                          onChange={(e) => setTestimonialForm(prev => ({
+                            ...prev,
+                            page_targets: { ...prev.page_targets, home: e.target.checked }
+                          }))}
+                        />
+                        Home Page
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px", opacity: testimonialForm.page_targets.all ? 0.5 : 1 }}>
+                        <input
+                          type="checkbox"
+                          disabled={testimonialForm.page_targets.all}
+                          checked={testimonialForm.page_targets.about}
+                          onChange={(e) => setTestimonialForm(prev => ({
+                            ...prev,
+                            page_targets: { ...prev.page_targets, about: e.target.checked }
+                          }))}
+                        />
+                        About Page
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px", opacity: testimonialForm.page_targets.all ? 0.5 : 1 }}>
+                        <input
+                          type="checkbox"
+                          disabled={testimonialForm.page_targets.all}
+                          checked={testimonialForm.page_targets.courses}
+                          onChange={(e) => setTestimonialForm(prev => ({
+                            ...prev,
+                            page_targets: { ...prev.page_targets, courses: e.target.checked }
+                          }))}
+                        />
+                        Courses Page
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px", opacity: testimonialForm.page_targets.all ? 0.5 : 1 }}>
+                        <input
+                          type="checkbox"
+                          disabled={testimonialForm.page_targets.all}
+                          checked={testimonialForm.page_targets.pricing}
+                          onChange={(e) => setTestimonialForm(prev => ({
+                            ...prev,
+                            page_targets: { ...prev.page_targets, pricing: e.target.checked }
+                          }))}
+                        />
+                        Pricing Page
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: "flex", gap: "16px", justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => { setIsEditingTestimonial(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="btn-secondary" style={{ padding: "12px 24px" }}>
+                    Cancel & Return
+                  </button>
+                  <button type="submit" className="btn-primary" style={{ padding: "12px 32px" }}>
+                    {editingTestimonialId ? "Save Testimonial" : "Add Testimonial"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* TAB: MANAGE COURSES */}
+        {activeTab === "courses" && (
+          <div>
+            {!isEditingCourse ? (
+              // Courses List Screen
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <AdminDataTable
+                  title="Active Courses"
+                  subtitle="Manage course catalog, modules, curriculums, and lesson detail pages."
+                  data={courses}
+                  keyField="id"
+                  defaultPageSize={10}
+                  searchPlaceholder="Search courses by title, level, icon..."
+                  searchKeys={["title", "level", "icon", "short_description", "description"]}
+                  headerAction={
+                    <button onClick={triggerCreateCourse} className="btn-primary" style={{ padding: "8px 16px", fontSize: "13px" }}>
+                      + Add Course
+                    </button>
+                  }
+                  columns={[
+                    {
+                      key: "image_url",
+                      label: "Thumbnail",
+                      width: "90px",
+                      align: "center",
+                      render: (c) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img 
+                          src={c.image_url || "/images/course_quran.png"} 
+                          alt={c.title} 
+                          style={{ width: "70px", height: "45px", borderRadius: "6px", objectFit: "cover", border: "1px solid var(--card-border)", margin: "0 auto", display: "block" }} 
+                        />
+                      )
+                    },
+                    {
+                      key: "title",
+                      label: "Course Title",
+                      render: (c) => <strong style={{ color: "#2B1F14" }}>{c.title}</strong>
+                    },
+                    {
+                      key: "icon",
+                      label: "Icon Tag",
+                      render: (c) => (
+                        <span style={{ padding: "3px 8px", background: "rgba(74, 93, 59, 0.08)", border: "1px solid rgba(74, 93, 59, 0.2)", borderRadius: "4px", fontSize: "11px", color: "#4A5D3B", fontWeight: "600", textTransform: "uppercase" }}>
+                          {c.icon || "book"}
+                        </span>
+                      )
+                    },
+                    {
+                      key: "level",
+                      label: "Level",
+                      render: (c) => c.level || "—"
+                    },
+                    {
+                      key: "order_index",
+                      label: "Sort Order",
+                      align: "center",
+                      width: "90px",
+                      render: (c) => c.order_index ?? 0
+                    }
+                  ]}
+                  actions={(c) => (
+                    <>
+                      <button onClick={() => triggerEditCourse(c)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                        Edit
+                      </button>
+                      <button onClick={() => handleDeleteCourse(c.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                />
+              </div>
+            ) : (
+              // Course Create / Edit Form
+              <form onSubmit={handleSaveCourse} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Course Details</h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Course Title *</label>
+                      <input
+                        type="text"
+                        value={courseForm.title}
+                        onChange={(e) => setCourseForm(prev => ({ ...prev, title: e.target.value }))}
+                        placeholder="e.g. Quran Learning with Tajweed"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Sort Order Index</label>
+                      <input
+                        type="number"
+                        value={courseForm.order_index}
+                        onChange={(e) => setCourseForm(prev => ({ ...prev, order_index: e.target.value }))}
+                        placeholder="e.g. 1"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Badge Icon Type *</label>
+                    <select
+                      value={courseForm.icon}
+                      onChange={(e) => setCourseForm(prev => ({ ...prev, icon: e.target.value }))}
+                      style={{
+                        ...formInputStyle,
+                        backgroundColor: "#fdfcf9",
+                        color: "var(--fg-color)",
+                        cursor: "pointer"
+                      }}
+                    >
+                      <option value="book">Book Icon (Quran)</option>
+                      <option value="dad">Arabic Dad Letter (Arabic Language)</option>
+                      <option value="mosque">Mosque Icon (Islamic Studies)</option>
+                      <option value="badge">Badge/Star Icon (Hifz/Memorization)</option>
+                      <option value="pencil">Pencil Icon (Noorani Qaida)</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Thumbnail Image URL</label>
+                      <input
+                        type="text"
+                        value={courseForm.image_url}
+                        onChange={(e) => setCourseForm(prev => ({ ...prev, image_url: e.target.value }))}
+                        placeholder="https://images.unsplash.com/... or /images/..."
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Or Upload Local Image Thumbnail</label>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleCourseImageUpload}
+                          disabled={uploading}
+                          style={{
+                            ...formInputStyle,
+                            padding: "8px 12px",
+                            flex: 1,
+                            fontSize: "13px"
+                          }}
+                        />
+                        {uploading && <span style={{ color: "var(--secondary-color)", fontSize: "12px" }}>Uploading...</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {courseForm.image_url && (
+                    <div style={{ marginTop: "4px", border: "1px solid var(--card-border)", borderRadius: "8px", padding: "8px", width: "fit-content", display: "flex", gap: "12px", alignItems: "center", backgroundColor: "rgba(255,255,255,0.01)" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={courseForm.image_url} alt="Preview" style={{ width: "90px", height: "60px", borderRadius: "6px", objectFit: "cover" }} />
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span style={{ fontSize: "11px", color: "var(--fg-muted)" }}>Thumbnail Preview</span>
+                        <button type="button" onClick={() => setCourseForm(prev => ({ ...prev, image_url: "" }))} style={{ color: "#ef4444", border: "none", background: "none", fontSize: "11px", cursor: "pointer", textAlign: "left", padding: 0 }}>Remove Image</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ---- Course Detail Page Content (optional) ---- */}
+                <div style={{ borderTop: "1px solid var(--card-border)", paddingTop: "20px", display: "flex", flexDirection: "column", gap: "18px" }}>
+                  <div>
+                    <h4 style={{ fontSize: "15px", fontWeight: "500", margin: 0 }}>Course Detail Page Content</h4>
+                    <p style={{ color: "var(--fg-muted)", fontSize: "12.5px", marginTop: "6px" }}>These fields power the course detail page. Leave any field blank to use the default template text.</p>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Short Description (hero subtitle)</label>
+                    <RichTextEditor key={`short-${editingCourseId || "new"}`} value={courseForm.short_description} onChange={(html) => setCourseForm(p => ({ ...p, short_description: html }))} placeholder="One or two lines shown under the course title in the hero." minHeight="80px" />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Level</label>
+                      <input value={courseForm.level} onChange={(e) => setCourseForm(p => ({ ...p, level: e.target.value }))} placeholder="e.g. Intermediate" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Class Duration</label>
+                      <input value={courseForm.class_duration} onChange={(e) => setCourseForm(p => ({ ...p, class_duration: e.target.value }))} placeholder="e.g. 45–60 min" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Course Duration</label>
+                      <input value={courseForm.course_duration} onChange={(e) => setCourseForm(p => ({ ...p, course_duration: e.target.value }))} placeholder="e.g. 3–6 Months" style={formInputStyle} />
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Mode</label>
+                      <input value={courseForm.mode} onChange={(e) => setCourseForm(p => ({ ...p, mode: e.target.value }))} placeholder="e.g. Online" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Age Group</label>
+                      <input value={courseForm.age_group} onChange={(e) => setCourseForm(p => ({ ...p, age_group: e.target.value }))} placeholder="e.g. Teens & Adults" style={formInputStyle} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Course Description (Rich Text Editor)</label>
+                    <RichTextEditor
+                      key={`desc-${editingCourseId || "new"}`}
+                      value={courseForm.description}
+                      onChange={(html) => setCourseForm((p) => ({ ...p, description: html }))}
+                      placeholder="Write full course description with headings, bold text, bullet lists..."
+                      minHeight="180px"
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>What You&apos;ll Learn <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>(one point per line)</span></label>
+                    <RichTextEditor key={`learn-${editingCourseId || "new"}`} value={courseForm.learn_points} onChange={(html) => setCourseForm(p => ({ ...p, learn_points: html }))} placeholder={"Improve reading fluency (one point per line)"} minHeight="120px" />
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Requirements <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>(one per line)</span></label>
+                      <RichTextEditor key={`req-${editingCourseId || "new"}`} value={courseForm.requirements} onChange={(html) => setCourseForm(p => ({ ...p, requirements: html }))} placeholder={"A laptop or smartphone (one per line)"} minHeight="120px" />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Who This Course Is For <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>(one per line)</span></label>
+                      <RichTextEditor key={`whofor-${editingCourseId || "new"}`} value={courseForm.who_for} onChange={(html) => setCourseForm(p => ({ ...p, who_for: html }))} placeholder={"Beginners (one per line)"} minHeight="120px" />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Detailed Content / Curriculum (Rich Text Editor)</label>
+                    <RichTextEditor
+                      key={`content-${editingCourseId || "new"}`}
+                      value={courseForm.content_details}
+                      onChange={(html) => setCourseForm((p) => ({ ...p, content_details: html }))}
+                      placeholder="Write detailed course curriculum and syllabus content shown lower on the page..."
+                      minHeight="220px"
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Course Content / Modules <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>(one per line — format: Title | Description)</span></label>
+                    <RichTextEditor key={`mods-${editingCourseId || "new"}`} value={courseForm.course_modules} onChange={(html) => setCourseForm(p => ({ ...p, course_modules: html }))} placeholder={"Reading Skills | Learn to read fluently (one per line)"} minHeight="130px" />
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <label style={formLabelStyle}>Course FAQs <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>(one per line — format: Question | Answer)</span></label>
+                    <RichTextEditor key={`cfaqs-${editingCourseId || "new"}`} value={courseForm.faqs} onChange={(html) => setCourseForm(p => ({ ...p, faqs: html }))} placeholder={"What does this course cover? | It covers... (one per line)"} minHeight="140px" />
+                  </div>
+                </div>
+
+                {/* Course SEO (Search Engine) */}
+                <div style={{ marginTop: "8px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", color: "#2B1F14", margin: "0 0 4px 0" }}>Course SEO (Search Engine)</h3>
+                  <p style={{ color: "var(--fg-muted)", fontSize: "13px", margin: "0 0 16px 0" }}>Ye is course ke detail page ke title &amp; meta tags me jaate hain. Khaali chhodoge to course title / short description apne-aap use hoga.</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>SEO Meta Title <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>({(courseForm.seo_title || "").length} chars · ~60 best)</span></label>
+                      <input type="text" value={courseForm.seo_title} onChange={(e) => setCourseForm(p => ({ ...p, seo_title: e.target.value }))} placeholder="e.g. Online Quran Tajweed Course — Yaqeen Institute" style={formInputStyle} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>SEO Meta Description <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>({(courseForm.seo_description || "").length} chars · ~160 best)</span></label>
+                      <textarea rows={3} value={courseForm.seo_description} onChange={(e) => setCourseForm(p => ({ ...p, seo_description: e.target.value }))} placeholder="Short summary shown in Google search results for this course." style={{ ...formInputStyle, minHeight: "80px", resize: "vertical", lineHeight: 1.6 }} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>SEO Keywords <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>(comma separated)</span></label>
+                      <input type="text" value={courseForm.seo_keywords} onChange={(e) => setCourseForm(p => ({ ...p, seo_keywords: e.target.value }))} placeholder="online quran classes, tajweed course, learn quran online" style={formInputStyle} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: "flex", gap: "16px", justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => { setIsEditingCourse(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="btn-secondary" style={{ padding: "12px 24px" }}>
+                    Cancel & Return
+                  </button>
+                  <button type="submit" className="btn-primary" style={{ padding: "12px 32px" }}>
+                    {editingCourseId ? "Save Course" : "Add Course"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* TAB: MANAGE PLANS */}
+        {activeTab === "plans" && (
+          <div>
+            {!isEditingPlan ? (
+              // Plans List Screen
+              <div className="glass-panel" style={{ padding: "24px" }}>
+                <AdminDataTable
+                  title="Pricing Packages"
+                  subtitle="Manage tuition packages, pricing plans, and course feature lists."
+                  data={plans}
+                  keyField="id"
+                  defaultPageSize={10}
+                  searchPlaceholder="Search plans by name, price, badge..."
+                  searchKeys={["name", "subtitle", "price", "badge", "icon"]}
+                  headerAction={
+                    <button onClick={triggerCreatePlan} className="btn-primary" style={{ padding: "8px 16px", fontSize: "13px" }}>
+                      + Create Package
+                    </button>
+                  }
+                  columns={[
+                    {
+                      key: "name",
+                      label: "Package Name",
+                      render: (p) => <strong style={{ color: "#2B1F14" }}>{p.name}</strong>
+                    },
+                    {
+                      key: "subtitle",
+                      label: "Subtitle",
+                      render: (p) => p.subtitle || "—"
+                    },
+                    {
+                      key: "price_usd",
+                      label: "🇺🇸 USD ($)",
+                      render: (p) => <span style={{ fontWeight: "700", color: "#8c5d31" }}>${p.price_usd || p.price || "—"}{p.period}</span>
+                    },
+                    {
+                      key: "price_gbp",
+                      label: "🇬🇧 Europe (£)",
+                      render: (p) => <span style={{ fontWeight: "700", color: "#4A5D3B" }}>{p.price_gbp ? `£${p.price_gbp}${p.period}` : "—"}</span>
+                    },
+                    {
+                      key: "price_aed",
+                      label: "🇦🇪 Gulf (AED)",
+                      render: (p) => <span style={{ fontWeight: "700", color: "#C99B4D" }}>{p.price_aed ? `AED ${p.price_aed}${p.period}` : "—"}</span>
+                    },
+                    {
+                      key: "icon",
+                      label: "Icon",
+                      render: (p) => (
+                        <span style={{ padding: "3px 8px", background: "rgba(201, 155, 77, 0.08)", border: "1px solid rgba(201, 155, 77, 0.2)", borderRadius: "4px", fontSize: "11px", color: "#8c5d31", fontWeight: "600", textTransform: "uppercase" }}>
+                          {p.icon || "plane"}
+                        </span>
+                      )
+                    },
+                    {
+                      key: "badge",
+                      label: "Ribbon Badge",
+                      render: (p) => p.badge ? (
+                        <span style={{ padding: "3px 8px", background: "rgba(74, 93, 59, 0.08)", border: "1px solid rgba(74, 93, 59, 0.2)", borderRadius: "4px", fontSize: "11px", color: "#4A5D3B", fontWeight: "600" }}>
+                          {p.badge}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--fg-muted)", fontSize: "12px" }}>—</span>
+                      )
+                    },
+                    {
+                      key: "features",
+                      label: "Features Count",
+                      render: (p) => `${p.features?.length || 0} items`
+                    },
+                    {
+                      key: "order_index",
+                      label: "Sort Order",
+                      align: "center",
+                      width: "80px",
+                      render: (p) => p.order_index ?? 0
+                    }
+                  ]}
+                  actions={(p) => (
+                    <>
+                      <button onClick={() => triggerEditPlan(p)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px" }}>
+                        Edit
+                      </button>
+                      <button onClick={() => handleDeletePlan(p.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: "12px", color: "#ef4444" }}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                />
+              </div>
+            ) : (
+              // Plan Create / Edit Form
+              <form onSubmit={handleSavePlan} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Package Details</h3>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Plan Name *</label>
+                      <input
+                        type="text"
+                        value={planForm.name}
+                        onChange={(e) => setPlanForm(prev => ({ ...prev, name: e.target.value }))}
+                        placeholder="e.g. Basic"
+                        required
+                        style={formInputStyle}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Subtitle / Description</label>
+                      <input
+                        type="text"
+                        value={planForm.subtitle}
+                        onChange={(e) => setPlanForm(prev => ({ ...prev, subtitle: e.target.value }))}
+                        placeholder="e.g. Entry Level Package"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Multi-Currency Price Grid */}
+                  <div style={{
+                    backgroundColor: "#FAF5EE",
+                    border: "1px solid #EADDC8",
+                    borderRadius: "12px",
+                    padding: "16px 18px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "12px"
+                  }}>
+                    <span style={{ fontSize: "12px", fontWeight: "700", color: "#2B1F14", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      🌍 Country / Region Wise Pricing
+                    </span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 120px 100px", gap: "14px" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <label style={{ ...formLabelStyle, fontSize: "12px", color: "#8c5d31" }}>
+                          🇺🇸 USD Price ($) * <span style={{ fontSize: "10.5px", fontWeight: 400 }}>(Other / Default)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={planForm.price_usd || planForm.price}
+                          onChange={(e) => setPlanForm(prev => ({ ...prev, price: e.target.value, price_usd: e.target.value }))}
+                          placeholder="e.g. 8.00"
+                          required
+                          style={formInputStyle}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <label style={{ ...formLabelStyle, fontSize: "12px", color: "#4A5D3B" }}>
+                          🇬🇧 Europe Price (£) <span style={{ fontSize: "10.5px", fontWeight: 400 }}>(UK & Europe - GBP)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={planForm.price_gbp}
+                          onChange={(e) => setPlanForm(prev => ({ ...prev, price_gbp: e.target.value }))}
+                          placeholder="e.g. 6.50"
+                          style={formInputStyle}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <label style={{ ...formLabelStyle, fontSize: "12px", color: "#C99B4D" }}>
+                          🇦🇪 Gulf Price (AED) <span style={{ fontSize: "10.5px", fontWeight: 400 }}>(GCC - Dirham)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={planForm.price_aed}
+                          onChange={(e) => setPlanForm(prev => ({ ...prev, price_aed: e.target.value }))}
+                          placeholder="e.g. 30.00"
+                          style={formInputStyle}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <label style={formLabelStyle}>Period</label>
+                        <input
+                          type="text"
+                          value={planForm.period}
+                          onChange={(e) => setPlanForm(prev => ({ ...prev, period: e.target.value }))}
+                          placeholder="/hour"
+                          style={formInputStyle}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <label style={formLabelStyle}>Order</label>
+                        <input
+                          type="number"
+                          value={planForm.order_index}
+                          onChange={(e) => setPlanForm(prev => ({ ...prev, order_index: e.target.value }))}
+                          placeholder="1"
+                          style={formInputStyle}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Brand Header Icon *</label>
+                      <select
+                        value={planForm.icon}
+                        onChange={(e) => setPlanForm(prev => ({ ...prev, icon: e.target.value }))}
+                        style={{
+                          ...formInputStyle,
+                          backgroundColor: "#fdfcf9",
+                          color: "var(--fg-color)",
+                          cursor: "pointer"
+                        }}
+                      >
+                        <option value="plane">Paper Plane Icon (Basic)</option>
+                        <option value="star">Star Award Icon (Essentials)</option>
+                        <option value="diamond">Diamond Icon (Premium)</option>
+                        <option value="crown">Crown Icon (Platinum)</option>
+                      </select>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <label style={formLabelStyle}>Ribbon Badge Text (Best Value, Popular, etc.)</label>
+                      <input
+                        type="text"
+                        value={planForm.badge}
+                        onChange={(e) => setPlanForm(prev => ({ ...prev, badge: e.target.value }))}
+                        placeholder="e.g. Best Value (or leave empty)"
+                        style={formInputStyle}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Features list checklist manager */}
+                <div className="glass-panel" style={{ padding: "28px", display: "flex", flexDirection: "column", gap: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: "600", borderBottom: "1px solid var(--card-border)", paddingBottom: "12px" }}>Itemized Features Checklist</h3>
+                  
+                  {planForm.features.length === 0 ? (
+                    <p style={{ color: "var(--fg-muted)", fontSize: "13px", fontStyle: "italic", padding: "10px 0" }}>No feature points configured yet. Use the add panel below to define points.</p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {planForm.features.map((item, idx) => (
+                        <div key={idx} style={{ display: "flex", alignItems: "center", justifyItems: "space-between", padding: "10px 16px", border: "1px solid var(--card-border)", borderRadius: "8px", backgroundColor: "rgba(0,0,0,0.01)", gap: "12px" }}>
+                          {/* Toggle Checkmark vs Cross */}
+                          <button 
+                            type="button" 
+                            onClick={() => handleTogglePlanFeatureIncluded(idx)} 
+                            style={{ 
+                              background: "none", 
+                              border: "none", 
+                              cursor: "pointer", 
+                              fontSize: "14px", 
+                              color: item.included ? "#4A5D3B" : "#ef4444",
+                              display: "flex", 
+                              alignItems: "center",
+                              gap: "6px",
+                              padding: 0
+                            }}
+                          >
+                            <span style={{ fontSize: "18px" }}>{item.included ? "✔️" : "❌"}</span>
+                            <span style={{ fontSize: "11px", fontWeight: "500", textTransform: "uppercase" }}>{item.included ? "Included" : "Excluded"}</span>
+                          </button>
+                          
+                          <span style={{ flexGrow: 1, fontSize: "14px", color: item.included ? "var(--fg-color)" : "var(--fg-muted)", textDecoration: item.included ? "none" : "line-through", textDecorationColor: "rgba(0,0,0,0.15)" }}>
+                            {item.text}
+                          </span>
+
+                          <button 
+                            type="button" 
+                            onClick={() => handleRemovePlanFeature(idx)} 
+                            style={{ background: "none", border: "none", color: "#ef4444", fontSize: "12px", cursor: "pointer", fontWeight: "600", padding: "4px 8px" }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add Feature Item Panel */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px", borderTop: "1px solid var(--card-border)", paddingTop: "20px", marginTop: "10px" }}>
+                    <label style={formLabelStyle}>Add Feature Point</label>
+                    <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+                      <input
+                        type="text"
+                        value={newFeatureText}
+                        onChange={(e) => setNewFeatureText(e.target.value)}
+                        placeholder="e.g. Proficient Arabic (Native) Teacher"
+                        style={{ ...formInputStyle, flexGrow: 1 }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleAddPlanFeature();
+                          }
+                        }}
+                      />
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", userSelect: "none" }}>
+                        <input
+                          type="checkbox"
+                          checked={newFeatureIncluded}
+                          onChange={(e) => setNewFeatureIncluded(e.target.checked)}
+                        />
+                        Mark Included
+                      </label>
+                      <button 
+                        type="button" 
+                        onClick={handleAddPlanFeature} 
+                        className="btn-primary" 
+                        style={{ padding: "10px 20px", fontSize: "13px" }}
+                      >
+                        + Add Item
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: "flex", gap: "16px", justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => { setIsEditingPlan(false); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="btn-secondary" style={{ padding: "12px 24px" }}>
+                    Cancel & Return
+                  </button>
+                  <button type="submit" className="btn-primary" style={{ padding: "12px 32px" }}>
+                    {editingPlanId ? "Save Package" : "Create Package"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// Styling components
+const sidebarBtnStyle = {
+  width: "100%",
+  padding: "10px 12px",
+  textAlign: "left",
+  background: "none",
+  border: "none",
+  borderLeft: "3px solid transparent",
+  color: "#4a3e30",
+  fontSize: "13px",
+  fontWeight: "500",
+  cursor: "pointer",
+  transition: "all 0.2s ease",
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  borderRadius: "0 6px 6px 0",
+  whiteSpace: "nowrap"
+};
+
+const formLabelStyle = {
+  fontSize: "12px",
+  fontWeight: "600",
+  color: "var(--fg-muted)"
+};
+
+const formInputStyle = {
+  padding: "12px 16px",
+  borderRadius: "8px",
+  border: "1px solid var(--card-border)",
+  backgroundColor: "rgba(0, 0, 0, 0.02)",
+  color: "var(--fg-color)",
+  outline: "none",
+  fontSize: "14px",
+  transition: "var(--transition-smooth)"
+};
+
+const formTextareaStyle = {
+  padding: "12px 16px",
+  borderRadius: "12px",
+  border: "1px solid var(--card-border)",
+  backgroundColor: "rgba(0, 0, 0, 0.02)",
+  color: "var(--fg-color)",
+  outline: "none",
+  fontSize: "14px",
+  resize: "vertical",
+  transition: "var(--transition-smooth)"
+};

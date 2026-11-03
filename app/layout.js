@@ -1,0 +1,179 @@
+import { Poppins, Lora } from "next/font/google";
+import "./globals.css";
+import Script from "next/script";
+import LayoutWrapper from "@/components/LayoutWrapper";
+import CustomScripts from "@/components/CustomScripts";
+import { SettingsProvider } from "@/lib/settings-context";
+import { getSEOSettings, getSiteSettings } from "@/lib/db-cached";
+import { supabase } from "@/lib/supabase";
+import { getPageSeo, getSiteUrl, buildMetadata } from "@/lib/seo";
+
+const poppins = Poppins({
+  variable: "--font-poppins",
+  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700", "800"],
+});
+
+const lora = Lora({
+  variable: "--font-lora",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+});
+
+// Enable Incremental Static Regeneration (ISR) - revalidate cache every 60 seconds
+export const revalidate = 60;
+
+export async function generateMetadata() {
+  // The root layout wraps every route, so its metadata is the site-wide base.
+  // Home ("/") has no child layout, so it uses this directly; every other page
+  // overrides title/description/keywords/canonical via its own layout.
+  try {
+    const [seoGlobal, homeSeo, siteUrl] = await Promise.all([
+      getSEOSettings(),
+      getPageSeo(supabase, "home"),
+      getSiteUrl(supabase),
+    ]);
+    const fav = (seoGlobal && seoGlobal.favicon_url) || "/favicon.ico";
+    return buildMetadata(homeSeo, { siteUrl, favicon: fav });
+  } catch (err) {
+    console.warn("Dynamic metadata fetch failed, using fallback:", err);
+  }
+
+  // Final fallback metadata
+  return {
+    title: "Yaqeen Institute - Learn Quran & Arabic Online",
+    description: "Learn Quran, Arabic, and Islamic Studies online with one-to-one live classes from qualified native tutors.",
+    keywords: "Quran, Arabic, learn Quran online, Yaqeen Institute, Islamic studies",
+    icons: {
+      icon: "/favicon.ico"
+    }
+  };
+}
+
+export default async function RootLayout({ children }) {
+  let logoText = "yaqeen";
+  let logoUrl = "";
+  let faviconUrl = "";
+
+  let contactEmail = "info@yaqeeninstitute.com";
+  let contactPhone = "+44 7700 183483";
+  let contactHours = "24x7 - We're always here for you.";
+  let contactSupport = "We serve students from around the world.";
+  let socialFacebook = "";
+  let socialInstagram = "";
+  let socialYoutube = "";
+  let socialWhatsapp = "";
+
+  let googleTagId = "";
+  let headerScripts = "";
+  let bodyScripts = "";
+  let footerScripts = "";
+
+  try {
+    // Run DB queries in parallel using cached results (revalidate: 60s)
+    const [siteData, seoData] = await Promise.all([
+      getSiteSettings(),
+      getSEOSettings()
+    ]);
+
+    if (siteData) {
+      logoText = siteData.logo_text || "yaqeen";
+      logoUrl = siteData.logo_url || "";
+      contactEmail = siteData.contact_email || contactEmail;
+      contactPhone = siteData.contact_phone || contactPhone;
+      contactHours = siteData.contact_hours || contactHours;
+      contactSupport = siteData.contact_support || contactSupport;
+      socialFacebook = siteData.social_facebook || "";
+      socialInstagram = siteData.social_instagram || "";
+      socialYoutube = siteData.social_youtube || "";
+      socialWhatsapp = siteData.social_whatsapp || "";
+      googleTagId = siteData.google_tag_id || "";
+      headerScripts = siteData.header_scripts || "";
+      bodyScripts = siteData.body_scripts || "";
+      footerScripts = siteData.footer_scripts || "";
+    }
+
+    if (seoData && seoData.favicon_url) {
+      faviconUrl = seoData.favicon_url;
+    }
+  } catch (err) {
+    console.warn("Could not load site logo or favicon in layout:", err);
+  }
+
+  return (
+    <html lang="en" className={`${poppins.variable} ${lora.variable}`} data-scroll-behavior="smooth" suppressHydrationWarning>
+      <body suppressHydrationWarning>
+        {/* Default Google tag (gtag.js) - Google Ads */}
+        <Script
+          src="https://www.googletagmanager.com/gtag/js?id=AW-18317816315"
+          strategy="afterInteractive"
+        />
+        <Script id="google-ads-init" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'AW-18317816315');
+          `}
+        </Script>
+
+        {/* Default Google tag (gtag.js) - Google Analytics */}
+        <Script
+          src="https://www.googletagmanager.com/gtag/js?id=G-6RGZGGEWN1"
+          strategy="afterInteractive"
+        />
+        <Script id="google-analytics-init" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-6RGZGGEWN1');
+          `}
+        </Script>
+
+        {/* Dynamic Admin-Configured Google Tag ID (if specified and different from defaults) */}
+        {googleTagId && googleTagId !== "AW-18317816315" && googleTagId !== "G-6RGZGGEWN1" ? (
+          <>
+            <Script
+              src={`https://www.googletagmanager.com/gtag/js?id=${googleTagId}`}
+              strategy="afterInteractive"
+            />
+            <Script id="custom-google-tag-init" strategy="afterInteractive">
+              {`
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                gtag('js', new Date());
+                gtag('config', '${googleTagId}');
+              `}
+            </Script>
+          </>
+        ) : null}
+
+        {/* Injected Header, Body & Footer Custom Tracking Scripts */}
+        <CustomScripts
+          headerScripts={headerScripts}
+          bodyScripts={bodyScripts}
+          footerScripts={footerScripts}
+        />
+
+        <SettingsProvider 
+          logoText={logoText} 
+          logoUrl={logoUrl} 
+          faviconUrl={faviconUrl}
+          contactEmail={contactEmail}
+          contactPhone={contactPhone}
+          contactHours={contactHours}
+          contactSupport={contactSupport}
+          socialFacebook={socialFacebook}
+          socialInstagram={socialInstagram}
+          socialYoutube={socialYoutube}
+          socialWhatsapp={socialWhatsapp}
+        >
+          <LayoutWrapper logoText={logoText} logoUrl={logoUrl} faviconUrl={faviconUrl}>
+            {children}
+          </LayoutWrapper>
+        </SettingsProvider>
+      </body>
+    </html>
+  );
+}

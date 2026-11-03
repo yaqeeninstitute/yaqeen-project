@@ -1,0 +1,134 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { usePathname } from "next/navigation";
+import Navbar from "@/components/Navbar";
+import Footer from "@/components/Footer";
+import CTABanner from "@/components/CTABanner";
+import ChatWidget from "@/components/ChatWidget";
+
+export default function LayoutWrapper({ children, logoText, logoUrl, faviconUrl }) {
+  const pathname = usePathname();
+  const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [showPreloader, setShowPreloader] = useState(true);
+  
+  useEffect(() => {
+    setLoading(true);
+    const timer = setTimeout(() => {
+      setLoading(false);
+    }, 450);
+    return () => clearTimeout(timer);
+  }, [pathname]);
+
+  useEffect(() => {
+    // Keep loader for at least 800ms to ensure smooth transition
+    const timer = setTimeout(() => {
+      const handleLoad = () => {
+        setInitialLoading(false);
+      };
+      
+      if (document.readyState === "complete") {
+        setInitialLoading(false);
+      } else {
+        window.addEventListener("load", handleLoad);
+        return () => window.removeEventListener("load", handleLoad);
+      }
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!initialLoading) {
+      const unmountTimer = setTimeout(() => {
+        setShowPreloader(false);
+      }, 500); // 0.5s matches transition
+      return () => clearTimeout(unmountTimer);
+    }
+  }, [initialLoading]);
+
+  // Hide Navbar and Footer on any administrative routes
+  const isAdminRoute = pathname && pathname.startsWith("/admin");
+
+  if (isAdminRoute) {
+    return <>{children}</>;
+  }
+
+  return (
+    <>
+      {/* Full Screen Page Preloader */}
+      {showPreloader && (
+        <div className={`preloader-container ${!initialLoading ? "fade-hide" : ""}`}>
+          <style dangerouslySetInnerHTML={{__html: `
+            @keyframes breathe-logo {
+              0%, 100% {
+                transform: scale(0.9);
+                filter: drop-shadow(0 0 0 rgba(201, 155, 77, 0));
+              }
+              50% {
+                transform: scale(1.1);
+                filter: drop-shadow(0 4px 20px rgba(201, 155, 77, 0.45));
+              }
+            }
+            .preloader-container {
+              position: fixed;
+              top: 0;
+              left: 0;
+              width: 100%;
+              height: 100%;
+              background-color: #FAF5EE;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              z-index: 999999;
+              transition: opacity 0.5s ease, visibility 0.5s ease;
+            }
+            .preloader-container.fade-hide {
+              opacity: 0;
+              visibility: hidden;
+              pointer-events: none;
+            }
+            .loader-logo {
+              width: 240px;
+              height: 240px;
+              object-fit: contain;
+              animation: breathe-logo 1.8s ease-in-out infinite;
+            }
+          `}} />
+          <img 
+            src="/images/logo.png" 
+            alt="YAQEEN Logo" 
+            className="loader-logo"
+          />
+        </div>
+      )}
+
+      {loading && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          height: "3px",
+          backgroundColor: "#C99B4D",
+          zIndex: 99999,
+          animation: "load-bar 0.45s ease-out forwards",
+          boxShadow: "0 1px 10px rgba(201, 155, 77, 0.4)"
+        }}>
+          <style dangerouslySetInnerHTML={{__html: `
+            @keyframes load-bar {
+              0% { width: 0%; opacity: 1; }
+              85% { width: 90%; opacity: 1; }
+              100% { width: 100%; opacity: 0; }
+            }
+          `}} />
+        </div>
+      )}
+      <Navbar logoText={logoText} logoUrl={logoUrl} faviconUrl={faviconUrl} />
+      <div>{children}</div>
+      <CTABanner />
+      <Footer faviconUrl={faviconUrl} />
+      <ChatWidget />
+    </>
+  );
+}
